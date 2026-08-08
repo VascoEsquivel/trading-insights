@@ -48,6 +48,23 @@ def load_snapshots():
     return db.latest_snapshots()
 
 
+@st.cache_data(ttl=TTL)
+def load_news(symbols: tuple[str, ...], limit: int = 40):
+    return db.get_news(list(symbols), limit)
+
+
+@st.cache_data(ttl=TTL)
+def load_social(symbols: tuple[str, ...]):
+    """Latest window plus the trailing baseline it should be read against."""
+    return {
+        symbol: {
+            "latest": db.latest_social(symbol),
+            "baseline": db.social_baseline(symbol),
+        }
+        for symbol in symbols
+    }
+
+
 def refresh_data() -> None:
     st.cache_data.clear()
 
@@ -441,6 +458,105 @@ def render_trade_form(asset_class: str, entries: list[dict], snapshots: dict) ->
 
 
 # --------------------------------------------------------------------------
+# News
+# --------------------------------------------------------------------------
+
+
+def link_safe(text: str) -> str:
+    """Make a headline safe to drop inside a markdown link label."""
+    return text.replace("[", "(").replace("]", ")").replace("$", r"\$")
+
+
+def render_news(entries: list[dict]) -> None:
+    symbols = [e["symbol"] for e in entries]
+    if not symbols:
+        return
+
+    st.markdown("#### News")
+    chosen = st.multiselect(
+        "Filter by symbol",
+        symbols,
+        default=symbols,
+        key=f"news_filter_{entries[0]['asset_class']}",
+        label_visibility="collapsed",
+    )
+    if not chosen:
+        st.caption("Select at least one symbol.")
+        return
+
+    items = load_news(tuple(chosen))
+    if not items:
+        st.caption(
+            "No headlines stored yet for these symbols. The collector pulls "
+            "company news and crypto RSS every 15 minutes."
+        )
+        return
+
+    lines = [
+        f"- [{link_safe(item['headline'])}]({item['url']})  \n"
+        f"  <sub>{item['symbol']} · {item.get('source') or '?'} · "
+        f"{fmt_when(item.get('published_at'))}</sub>"
+        for item in items[:25]
+    ]
+    st.markdown("\n".join(lines), unsafe_allow_html=True)
+
+
+# --------------------------------------------------------------------------
+# Sentiment
+# --------------------------------------------------------------------------
+
+
+def polarity_label(score: float | None) -> str:
+    """Describe the tone of matched titles. Descriptive only — not a call."""
+    if score is None:
+        return "no score"
+    if score >= 0.05:
+        return f"positive tone {score:+.2f}"
+    if score <= -0.05:
+        return f"negative tone {score:+.2f}"
+    return f"neutral tone {score:+.2f}"
+
+
+def trend_marker(count: int, baseline: float | None) -> str:
+    if baseline is None or baseline <= 0:
+        return "no baseline yet"
+    delta = (count - baseline) / baseline * 100
+    arrow = "▲" if delta > 0 else ("▼" if delta < 0 else "▬")
+    return f"{arrow} {delta:+.0f}% vs. trailing 24h average of {baseline:.1f}"
+
+
+def render_sentiment(entries: list[dict]) -> None:
+    """Mention counts and polarity. Inputs, not verdicts — no buy/sell language."""
+    if not config.ENABLE_REDDIT:
+        return
+
+    st.markdown("#### Reddit mentions")
+    data = load_social(tuple(e["symbol"] for e in entries))
+    shown = 0
+    for entry in entries:
+        record = data.get(entry["symbol"]) or {}
+        latest = record.get("latest")
+        if not latest:
+            continue
+        shown += 1
+        st.markdown(
+            md(
+                f"**{entry['symbol']}** — {latest['mention_count']} mentions "
+                f"in the window ending {fmt_when(latest['window_end'])} · "
+                f"{trend_marker(latest['mention_count'], record.get('baseline'))} · "
+                f"{polarity_label(latest.get('sentiment_score'))}"
+            )
+        )
+    if not shown:
+        st.caption("No mentions recorded yet in the scanned subreddits.")
+    else:
+        st.caption(
+            "Counts match on ticker, cashtag, and coin name, so tokens sharing a "
+            "ticker share a count. Raw signal for context only."
+        )
+
+
+# --------------------------------------------------------------------------
 # Tabs
 # --------------------------------------------------------------------------
 
@@ -452,6 +568,12 @@ def render_asset_tab(asset_class: str, label: str, snapshots: dict) -> None:
     render_watchlist_manager(asset_class, entries)
     st.divider()
     render_trade_form(asset_class, entries, snapshots)
+    st.divider()
+    news_col, social_col = st.columns([3, 2])
+    with news_col:
+        render_news(entries)
+    with social_col:
+        render_sentiment(entries)
 
 
 # --------------------------------------------------------------------------
