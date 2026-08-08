@@ -371,6 +371,72 @@ def get_news(symbols: Sequence[str], limit: int = 40) -> list[dict[str, Any]]:
         ]
 
 
+# --------------------------------------------------------------------------
+# Pattern stats (historical study)
+# --------------------------------------------------------------------------
+
+
+# Output of `python -m quant.study`. Purely derived data, so each run drops and
+# recreates the table rather than migrating it — that keeps the columns in step
+# with whatever the study currently measures.
+PATTERN_STATS_DDL = """
+CREATE TABLE IF NOT EXISTS pattern_stats (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    condition_key     TEXT NOT NULL UNIQUE,
+    label             TEXT NOT NULL,
+    description       TEXT,
+    n                 INTEGER NOT NULL,
+    hits              INTEGER NOT NULL,
+    hit_rate          REAL NOT NULL,
+    base_rate         REAL NOT NULL,
+    lift              REAL NOT NULL,
+    median_fwd_return REAL,
+    bust_rate         REAL,
+    base_bust_rate    REAL,
+    ci_low            REAL,
+    ci_high           REAL,
+    universe_size     INTEGER,
+    horizon_days      INTEGER,
+    threshold         REAL,
+    computed_at       TEXT NOT NULL
+)
+"""
+
+PATTERN_STATS_COLUMNS = [
+    "condition_key", "label", "description", "n", "hits", "hit_rate",
+    "base_rate", "lift", "median_fwd_return", "bust_rate", "base_bust_rate",
+    "ci_low", "ci_high", "universe_size", "horizon_days", "threshold",
+    "computed_at",
+]
+
+
+def save_pattern_stats(rows: Iterable[dict[str, Any]]) -> int:
+    rows = list(rows)
+    if not rows:
+        return 0
+    columns = ",".join(PATTERN_STATS_COLUMNS)
+    placeholders = ",".join(f":{c}" for c in PATTERN_STATS_COLUMNS)
+    with connect() as conn:
+        conn.execute("DROP TABLE IF EXISTS pattern_stats")
+        conn.execute(PATTERN_STATS_DDL)
+        conn.executemany(
+            f"INSERT INTO pattern_stats ({columns}) VALUES ({placeholders})", rows
+        )
+    return len(rows)
+
+
+def get_pattern_stats() -> dict[str, dict[str, Any]]:
+    """condition_key -> stats row. Empty until `python -m quant.study` runs."""
+    with connect(readonly=True) as conn:
+        try:
+            rows = conn.execute(
+                "SELECT * FROM pattern_stats ORDER BY lift DESC"
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return {}
+    return {r["condition_key"]: dict(r) for r in rows}
+
+
 def prune_news(keep_days: int = 14) -> None:
     cutoff = iso(utcnow() - timedelta(days=keep_days))
     with connect() as conn:

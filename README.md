@@ -202,6 +202,72 @@ CoinGecko data resampled to daily closes for coins, and collected
 `price_snapshots` for DexScreener-only tokens (where the read says so and marks
 itself provisional).
 
+## Recommended — measured base rates, not predictions
+
+Build the study first (a couple of minutes, ~250 tickers, ~12 years of daily
+bars):
+
+```bash
+python -m quant.study
+```
+
+For every ticker on every trading day it computes a feature set, labels whether
+a large move followed, and reports how often each setup was *actually* followed
+by one, against the unconditional rate over the same data. The **Recommended**
+tab then runs the identical conditions against today's last bar and shows what
+currently matches, with each setup's historical record attached.
+
+### What the study found
+
+Baseline: on a randomly chosen day, a +40% move within 60 trading days followed
+**6.4%** of the time; a −20% move followed **10.1%**.
+
+| Setup | n | Big up-move | vs base | Big drop | Typical |
+|---|---|---|---|---|---|
+| Six-month momentum | 47,539 | 15.1% | 2.38x | 14.6% | **+4.7%** |
+| Coiling near the high | 45,468 | 3.1% | 0.48x | **4.7%** | +4.0% |
+| Stage-2 breakout | 15,040 | 6.3% | 0.99x | 8.0% | +3.6% |
+| New 52-week high | 39,325 | 5.0% | 0.79x | 6.7% | +3.5% |
+| Volume shock | 8,494 | 11.2% | 1.76x | 16.2% | +2.5% |
+| *Control: broken downtrend* | 214,786 | 7.3% | 1.15x | 13.5% | +2.8% |
+| Recovering from a collapse | 9,949 | 14.0% | 2.20x | **32.2%** | **−5.5%** |
+
+Two results are worth dwelling on, because they are why the table reports both
+tails rather than a single score:
+
+**The control condition beat the baseline.** A broken downtrend — below the
+200-day, negative over six months — was followed by a +40% move 15% *more* often
+than a random day. It was included expecting it to underperform. It does not,
+and the reason is that a fixed percentage threshold is partly a volatility bet:
+cheap, violent names clear ±40% more often whichever direction they are heading.
+
+**"Recovering from a collapse" is a lottery ticket, not an edge.** It has the
+second-highest big-up-move rate in the table, which on hit rate alone would make
+it a top setup. Its drop rate is 32% against a 10% baseline and its median
+outcome is −5.5%. Ranking by hit rate would have promoted the worst setup in the
+study.
+
+So the tab sorts by *typical* (median) outcome and always shows the drop rate
+next to the headline number. Six-month momentum is the only condition with both
+a strong upside lift and the best typical outcome — which is roughly what the
+momentum literature would predict.
+
+### Biases, stated rather than corrected
+
+- **Survivorship.** yfinance serves only tickers that still trade, so companies
+  that went to zero are absent and every rate reads optimistic.
+- **Overlapping windows.** Consecutive days are near-duplicates, so the true
+  independent sample is far smaller than n, and the Wilson intervals are too
+  tight.
+- **Multiple testing.** Ten conditions were tried; some of the spread is chance.
+- **Regime.** The window is dominated by a long bull market.
+- No position sizing, costs, slippage, or exit rule is modelled. This is not a
+  backtest of a strategy.
+
+`quant/live.py` deliberately imports the same `CONDITIONS` and feature code the
+study uses. If the two ever drifted apart, every number on the tab would quietly
+stop meaning anything.
+
 ## Discover — candidates beyond the watchlist
 
 The **Discover** tab scans the whole market instead of your watchlist, in two

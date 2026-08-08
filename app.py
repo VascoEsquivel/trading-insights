@@ -20,6 +20,7 @@ from collector import crypto as crypto_source
 from collector import discovery
 from collector import memecoins as meme_source
 from collector import stocks as stock_source
+from quant import live as quant_live
 from trading import db, portfolio, signals
 
 st.set_page_config(
@@ -1357,6 +1358,229 @@ def render_discover_tab() -> None:
 
 
 # --------------------------------------------------------------------------
+# Recommended tab — live setups against measured historical base rates
+# --------------------------------------------------------------------------
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_pattern_stats():
+    return db.get_pattern_stats()
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def load_live_setups():
+    """Heavy: downloads 2y of history for the whole study universe."""
+    return quant_live.rank(quant_live.scan(), db.get_pattern_stats())
+
+
+def pct(value: float | None, digits: int = 1) -> str:
+    return DASH if value is None else f"{value * 100:.{digits}f}%"
+
+
+def signed_pct(value: float | None, digits: int = 1) -> str:
+    return DASH if value is None else f"{value * 100:+.{digits}f}%"
+
+
+def stats_table(stats: dict) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "Setup": s["label"],
+                "Occurrences": f"{s['n']:,}",
+                "Big up-move": pct(s["hit_rate"]),
+                "vs base": f"{s['lift']:.2f}x",
+                "Big drop": pct(s["bust_rate"]),
+                "Typical": signed_pct(s["median_fwd_return"]),
+            }
+            for s in sorted(stats.values(), key=lambda r: -r["median_fwd_return"])
+        ]
+    )
+
+
+def render_setup_cards(setups: list[dict]) -> None:
+    for s in setups:
+        lift_class = "ti-up" if s["lift"] >= 1.15 else ("ti-down" if s["lift"] < 0.9 else "")
+        risk_class = "ti-down" if s["bust_rate"] > s["base_bust_rate"] * 1.3 else ""
+        st.markdown(
+            "<div class='ti-setup'>"
+            f"<div class='ti-setup-head'><span class='ti-setup-name'>{html_lib.escape(s['label'])}</span>"
+            f"<span class='ti-setup-n'>n={s['n']:,}</span></div>"
+            f"<div class='ti-setup-desc'>{html_lib.escape(s['description'])}</div>"
+            "<div class='ti-setup-stats'>"
+            f"<span>big up-move <b class='{lift_class}'>{pct(s['hit_rate'])}</b>"
+            f" <i>vs {pct(s['base_rate'])} base</i></span>"
+            f"<span>big drop <b class='{risk_class}'>{pct(s['bust_rate'])}</b>"
+            f" <i>vs {pct(s['base_bust_rate'])} base</i></span>"
+            f"<span>typical <b>{signed_pct(s['median_fwd_return'])}</b></span>"
+            "</div></div>",
+            unsafe_allow_html=True,
+        )
+
+
+def render_recommended_tab() -> None:
+    st.subheader("Recommended")
+    stats = load_pattern_stats()
+
+    if not stats:
+        st.warning(
+            "No historical study on record yet. Build it with:\n\n"
+            "```\npython -m quant.study\n```\n\n"
+            "It downloads roughly a decade of daily history for ~250 tickers and "
+            "takes a couple of minutes. Everything on this tab derives from it."
+        )
+        return
+
+    sample = next(iter(stats.values()))
+    st.caption(
+        f"Every setup below was measured over {sample['universe_size']} tickers: "
+        f"how often it was actually followed by a "
+        f"{sample['threshold'] * 100:.0f}% move within "
+        f"{sample['horizon_days']} trading days, against the "
+        f"{pct(sample['base_rate'])} rate for a randomly chosen day. These are "
+        "historical frequencies, not forecasts."
+    )
+
+    with st.expander("What this does and does not measure — read once"):
+        st.markdown(
+            f"""
+**Measured, not asserted.** {sample['universe_size']} tickers, ~12 years of
+daily bars, every trading day scored. A setup's number is the share of times it
+was followed by a big move — nothing more.
+
+**Both tails, deliberately.** A fixed +{sample['threshold'] * 100:.0f}% threshold
+is partly a volatility bet: cheap, violent stocks clear any fixed percentage more
+often whichever way they are going. That is why the drop rate and the *typical*
+(median) outcome sit next to the headline number. "Recovering from a collapse"
+has one of the highest big-up-move rates in the table **and** a negative typical
+outcome — a lottery ticket, not an edge. The control condition, a broken
+downtrend, also scores above baseline for exactly this reason.
+
+**Biases that remain, uncorrected:**
+
+- *Survivorship.* Yahoo only serves tickers that still trade. Companies that
+  went to zero are missing, so every rate here reads high.
+- *Overlapping windows.* Consecutive days are near-duplicates, so the true
+  independent sample is far smaller than the occurrence count suggests.
+- *Multiple testing.* Ten conditions were tried. Some of the spread is chance.
+- *Regime.* The window is dominated by a long bull market.
+
+**No position sizing, costs, slippage, or exit rule is modelled.** This is not a
+backtest of a strategy, and none of it is advice.
+"""
+        )
+
+    st.markdown("#### The historical record")
+    render_table(stats_table(stats))
+    st.caption(
+        md(
+            "Sorted by typical outcome, not by hit rate — the hit-rate column "
+            "alone rewards volatility. **Typical** is the median forward return; "
+            "**big up-move** and **big drop** are the two tails."
+        )
+    )
+
+    st.divider()
+    st.markdown("#### What matches right now")
+    scan_col, note_col = st.columns([1, 3])
+    if scan_col.button("Scan universe", key="rec_scan", type="primary", width="stretch"):
+        st.session_state["rec_ran"] = True
+        load_live_setups.clear()
+    note_col.caption(
+        "Runs the same conditions against the latest bar for every ticker in the "
+        "study universe. One batched download, cached for 30 minutes."
+    )
+
+    if not st.session_state.get("rec_ran"):
+        return
+
+    with st.spinner("Downloading history and matching setups…"):
+        rows = load_live_setups()
+    if not rows:
+        st.warning("Nothing matched, or the download failed. Try again shortly.")
+        return
+
+    st.caption(
+        f"{len(rows)} tickers match at least one setup. Ordered by how many "
+        "distinct setups agree, then by typical outcome — one setup firing is "
+        "common, several agreeing at once is not."
+    )
+
+    watched = {w["symbol"] for w in load_watchlist("stock")}
+    widths = [1.1, 0.6, 1.0, 1.0, 1.0, 0.95, 2.3, 0.5]
+    head = st.columns(widths)
+    for col, label in zip(
+        head,
+        ["Ticker", "Setups", "Typical", "Big up", "Big drop", "6m", "Matched", ""],
+    ):
+        col.markdown(f"<div class='ti-rowhead'>{label}</div>", unsafe_allow_html=True)
+
+    for index, row in enumerate(rows[:MAX_CANDIDATE_ROWS]):
+        cols = st.columns(widths)
+        ticker = row["ticker"]
+        if cols[0].button(ticker, key=f"rec_pick_{index}", width="stretch",
+                          help="Show the historical record behind these setups"):
+            st.session_state["rec_sel"] = ticker
+            st.rerun()
+
+        cells = [
+            (str(row["n_setups"]), ""),
+            (signed_pct(row["typical"]), "ti-up" if row["typical"] > 0 else "ti-down"),
+            (pct(row["best_upside"]), ""),
+            (pct(row["worst_downside"]),
+             "ti-down" if row["worst_downside"] > row["setups"][0]["base_bust_rate"] * 1.3 else ""),
+            (signed_pct(row.get("ret_6m")),
+             "ti-up" if (row.get("ret_6m") or 0) >= 0 else "ti-down"),
+        ]
+        for col, (text, css) in zip(cols[1:6], cells):
+            col.markdown(
+                f"<div class='ti-rowcell ti-num {css}'>{text}</div>",
+                unsafe_allow_html=True,
+            )
+        cols[6].markdown(
+            "<div class='ti-rowcell ti-dim'>"
+            + html_lib.escape(", ".join(s["label"] for s in row["setups"]))
+            + "</div>",
+            unsafe_allow_html=True,
+        )
+        if ticker in watched:
+            cols[7].markdown(
+                "<div class='ti-rowcell ti-dim' title='Already watched'>✓</div>",
+                unsafe_allow_html=True,
+            )
+        elif cols[7].button("＋", key=f"rec_add_{index}", help="Add to watchlist"):
+            db.add_watchlist_item(ticker, "stock", ticker)
+            st.session_state["rec_sel"] = ticker
+            flash("success", f"Added {ticker} to the stock watchlist.")
+            refresh_data()
+            st.rerun()
+
+    selected = st.session_state.get("rec_sel")
+    chosen = next((r for r in rows if r["ticker"] == selected), None)
+    if chosen is None:
+        st.info("Click a **ticker** for the record behind its setups, or **+** to watch it.")
+        return
+
+    st.divider()
+    st.markdown(f"#### {chosen['ticker']} · the record behind these setups")
+    st.markdown(
+        md(
+            f"Price {fmt_price(chosen['price'])} · six-month "
+            f"{signed_pct(chosen.get('ret_6m'))} · "
+            f"{signed_pct(chosen.get('pct_from_52w_high'))} from its 52-week high · "
+            f"RSI {chosen.get('rsi14') and round(chosen['rsi14'])} · "
+            f"as of {chosen['as_of']}"
+        )
+    )
+    render_setup_cards(chosen["setups"])
+    st.caption(
+        f"Matching a setup means {chosen['ticker']} currently looks like the "
+        "historical cases — not that it will do the same thing. On the best of "
+        f"these, the big move failed to appear "
+        f"{pct(1 - chosen['best_upside'])} of the time."
+    )
+
+
+# --------------------------------------------------------------------------
 # Portfolio tab
 # --------------------------------------------------------------------------
 
@@ -1565,12 +1789,16 @@ def main() -> None:
 
     drain_flash()
 
-    tabs = st.tabs([label for _, label in ASSET_TABS] + ["Discover", "Portfolio"])
+    tabs = st.tabs(
+        [label for _, label in ASSET_TABS] + ["Discover", "Recommended", "Portfolio"]
+    )
     for tab, (asset_class, label) in zip(tabs, ASSET_TABS):
         with tab:
             render_asset_tab(asset_class, label, snapshots)
-    with tabs[-2]:
+    with tabs[-3]:
         render_discover_tab()
+    with tabs[-2]:
+        render_recommended_tab()
     with tabs[-1]:
         render_portfolio_tab(snapshots)
 
