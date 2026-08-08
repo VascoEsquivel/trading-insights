@@ -136,6 +136,37 @@ CoinGecko data resampled to daily closes for coins, and collected
 `price_snapshots` for DexScreener-only tokens (where the read says so and marks
 itself provisional).
 
+## Discover — candidates beyond the watchlist
+
+The **Discover** tab scans the whole market instead of your watchlist, in two
+stages.
+
+First a cheap pass ranks a screen's worth of candidates on data the screen
+already returns — volume against its 3-month average, position in the 52-week
+range, distance from the 50-day average, market cap, and whether the move is so
+large that most of it is already behind it. That ordering is deliberately not
+"biggest gainer first".
+
+Then **Analyse** runs the full read on one candidate: it fetches that symbol's
+price history and headlines on demand (discovery candidates are off-watchlist,
+so nothing has been collected for them yet) and produces the same
+Supporting / Against / Context breakdown as the signal desk.
+
+The two stages disagreeing is the point. A recent scan had AXTI ranked top at
++3/−0 on screen data; the deep read came back +1/−3 — extended 59% above its
+20-day average, RSI 73, and no headline explaining an unusual move. That is the
+catch a gainers list alone will not give you.
+
+Sources: Yahoo's predefined screeners via yfinance for stocks (day gainers, most
+active, small-cap gainers, growth tech, undervalued growth, aggressive small
+caps, day losers); CoinGecko `/search/trending` and the `/coins/markets` 24h
+leaderboard for crypto; DexScreener boosted tokens for memes. Every scan is a
+live API call, so it is button-gated and cached for five minutes.
+
+Finnhub's general news feed is deliberately not used for discovery: its items
+come back with an empty `related` field, so headlines cannot be mapped to
+tickers.
+
 ## Using it
 
 Each asset tab has the same shape: watchlist table, add/remove controls, a

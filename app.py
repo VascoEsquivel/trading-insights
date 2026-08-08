@@ -17,6 +17,7 @@ import streamlit as st
 
 import config
 from collector import crypto as crypto_source
+from collector import discovery
 from collector import memecoins as meme_source
 from collector import stocks as stock_source
 from trading import db, portfolio, signals
@@ -125,14 +126,19 @@ def fmt_price(value: float | None) -> str:
     return f"${value:.4g}"
 
 
-def fmt_compact(value: float | None) -> str:
+def fmt_compact(value: float | None, prefix: str = "$") -> str:
     if value is None:
         return DASH
     magnitude = abs(value)
     for cutoff, suffix in ((1e12, "T"), (1e9, "B"), (1e6, "M"), (1e3, "K")):
         if magnitude >= cutoff:
-            return f"${value / cutoff:,.2f}{suffix}"
-    return f"${value:,.2f}"
+            return f"{prefix}{value / cutoff:,.2f}{suffix}"
+    return f"{prefix}{value:,.2f}"
+
+
+def fmt_shares(value: float | None) -> str:
+    """Stock volume is a share count, not dollars — no currency prefix."""
+    return fmt_compact(value, prefix="")
 
 
 def fmt_pct(value: float | None) -> str:
@@ -375,7 +381,10 @@ def build_table(entries: list[dict], snapshots: dict, asset_class: str) -> pd.Da
             "Name": entry.get("name") or DASH,
             "Price": fmt_price(snap.get("price")),
             "24h": fmt_pct(snap.get("pct_change_24h")),
-            "Volume 24h": fmt_compact(snap.get("volume")),
+            "Volume 24h": (
+                fmt_shares(snap.get("volume")) if asset_class == "stock"
+                else fmt_compact(snap.get("volume"))
+            ),
         }
         if asset_class == "meme":
             # Risk context is pinned next to price, per the ground rules.
@@ -792,6 +801,31 @@ STANCE_ICON = {"supportive": "▲", "cautionary": "▼", "neutral": "●"}
 STANCE_CLASS = {"supportive": "ti-up", "cautionary": "ti-down", "neutral": ""}
 
 
+def render_factor_grid(factors) -> None:
+    """Supporting / Against / Context, each factor carrying its own number."""
+    buckets = [
+        ("Supporting", [f for f in factors if f.stance == "supportive"], "ti-up"),
+        ("Against", [f for f in factors if f.stance == "cautionary"], "ti-down"),
+        ("Context", [f for f in factors if f.stance == "neutral"], ""),
+    ]
+    blocks = []
+    for title, items, css in buckets:
+        if items:
+            rows = "".join(
+                f"<div class='ti-factor'><span class='ti-fmark {STANCE_CLASS[i.stance]}'>"
+                f"{STANCE_ICON[i.stance]}</span><div><b>{html_lib.escape(i.label)}</b>"
+                f"<div class='ti-fdetail'>{html_lib.escape(i.detail)}</div></div></div>"
+                for i in items
+            )
+        else:
+            rows = "<div class='ti-fempty'>Nothing in this column.</div>"
+        blocks.append(
+            f"<div class='ti-fcol'><div class='ti-fhead {css}'>{title} · {len(items)}</div>"
+            f"{rows}</div>"
+        )
+    st.markdown(f"<div class='ti-fgrid'>{''.join(blocks)}</div>", unsafe_allow_html=True)
+
+
 def render_signal_desk(asset_class: str, entries: list[dict], snapshots: dict) -> None:
     priced = [e for e in entries if e["symbol"] in snapshots]
     if not priced:
@@ -852,35 +886,7 @@ def render_signal_desk(asset_class: str, entries: list[dict], snapshots: dict) -
         unsafe_allow_html=True,
     )
 
-    supportive = [f for f in read.factors if f.stance == "supportive"]
-    cautionary = [f for f in read.factors if f.stance == "cautionary"]
-    neutral = [f for f in read.factors if f.stance == "neutral"]
-
-    def factor_block(title: str, items, css: str) -> str:
-        if not items:
-            return (
-                f"<div class='ti-fcol'><div class='ti-fhead {css}'>{title} · 0</div>"
-                "<div class='ti-fempty'>Nothing in this column.</div></div>"
-            )
-        rows = "".join(
-            f"<div class='ti-factor'><span class='ti-fmark {STANCE_CLASS[i.stance]}'>"
-            f"{STANCE_ICON[i.stance]}</span><div><b>{html_lib.escape(i.label)}</b>"
-            f"<div class='ti-fdetail'>{html_lib.escape(i.detail)}</div></div></div>"
-            for i in items
-        )
-        return (
-            f"<div class='ti-fcol'><div class='ti-fhead {css}'>{title} · {len(items)}</div>"
-            f"{rows}</div>"
-        )
-
-    st.markdown(
-        "<div class='ti-fgrid'>"
-        + factor_block("Supporting", supportive, "ti-up")
-        + factor_block("Against", cautionary, "ti-down")
-        + factor_block("Context", neutral, "")
-        + "</div>",
-        unsafe_allow_html=True,
-    )
+    render_factor_grid(read.factors)
 
     if read.news:
         with st.expander(f"The {len(read.news)} headlines this read used"):
@@ -1102,6 +1108,196 @@ def render_asset_tab(asset_class: str, label: str, snapshots: dict) -> None:
 
 
 # --------------------------------------------------------------------------
+# Discover tab — candidates from outside the watchlist
+# --------------------------------------------------------------------------
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_stock_screen(screen: str):
+    return signals.rank_candidates(discovery.screen_stocks(screen, count=30))
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_crypto_candidates(mode: str):
+    rows = (
+        discovery.trending_crypto()
+        if mode == "Trending searches"
+        else discovery.crypto_movers(top=25)
+    )
+    return signals.rank_candidates(rows)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_meme_candidates():
+    return signals.rank_candidates(discovery.meme_candidates(limit=15))
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def deep_read(symbol: str, _candidate: dict):
+    """Full analysis of an off-watchlist candidate: fetch its news, then read it."""
+    discovery.prime_news(_candidate)
+    entry = {
+        "symbol": _candidate["symbol"],
+        "name": _candidate.get("name"),
+        "asset_class": _candidate["asset_class"],
+        "source_id": _candidate.get("source_id"),
+        "pair_created_at": _candidate.get("pair_created_at"),
+    }
+    snapshot = {
+        "price": _candidate.get("price"),
+        "pct_change_24h": _candidate.get("change_24h"),
+        "volume": _candidate.get("volume"),
+        "liquidity_usd": _candidate.get("liquidity_usd"),
+    }
+    return signals.analyze(entry, snapshot)
+
+
+def candidate_table(rows: list[dict], asset_class: str) -> pd.DataFrame:
+    table = []
+    for r in rows:
+        row = {
+            "Symbol": r["symbol"],
+            "Name": (r.get("name") or "")[:40],
+            "Price": fmt_price(r.get("price")),
+            "24h": fmt_pct(r.get("change_24h")),
+            "Volume 24h": (
+                fmt_shares(r.get("volume")) if asset_class == "stock"
+                else fmt_compact(r.get("volume"))
+            ),
+            "Market cap": fmt_compact(r.get("market_cap")),
+        }
+        if asset_class == "stock":
+            ratio = r.get("volume_ratio")
+            row["Vol vs avg"] = f"{ratio:.2f}x" if ratio else DASH
+        if asset_class == "meme":
+            row["Liquidity"] = fmt_compact(r.get("liquidity_usd"))
+            row["Risk"] = risk_flags(
+                {"pair_created_at": r.get("pair_created_at")},
+                {"liquidity_usd": r.get("liquidity_usd")},
+            )
+        row["Evidence"] = f"+{r['supportive']} / -{r['cautionary']}"
+        table.append(row)
+    return pd.DataFrame(table)
+
+
+def render_discover_tab() -> None:
+    st.subheader("Discover")
+    st.caption(
+        "Scans the whole market rather than your watchlist, then ranks what it "
+        "finds on the same evidence the signal desk uses — so the top row is not "
+        "simply the biggest gainer. Nothing here is a prediction, and a stock "
+        "that has already run is often the worst entry, not the best."
+    )
+
+    source = st.radio(
+        "Source", ["Stocks", "Crypto", "Meme coins"],
+        horizontal=True, key="disc_source", label_visibility="collapsed",
+    )
+
+    control, action = st.columns([3, 1])
+    if source == "Stocks":
+        screen_label = control.selectbox(
+            "Screen", list(discovery.STOCK_SCREENS), key="disc_screen",
+            label_visibility="collapsed",
+        )
+    elif source == "Crypto":
+        mode = control.selectbox(
+            "Mode", ["24h movers", "Trending searches"], key="disc_cmode",
+            label_visibility="collapsed",
+        )
+    else:
+        control.caption("Boosted tokens on DexScreener, with risk context.")
+
+    with action:
+        scan_clicked = st.button("Scan market", key="disc_scan", width="stretch",
+                                 type="primary")
+    if scan_clicked:
+        st.session_state["disc_ran"] = True
+        st.cache_data.clear()
+
+    if not st.session_state.get("disc_ran"):
+        st.info("Hit **Scan market** to pull candidates. Each scan is a live API call.")
+        return
+
+    with st.spinner("Scanning…"):
+        if source == "Stocks":
+            rows = load_stock_screen(discovery.STOCK_SCREENS[screen_label])
+            asset_class = "stock"
+        elif source == "Crypto":
+            rows = load_crypto_candidates(mode)
+            asset_class = "crypto"
+        else:
+            rows = load_meme_candidates()
+            asset_class = "meme"
+
+    if not rows:
+        st.warning(
+            "That scan came back empty — the source may be rate-limited or down. "
+            "Try again shortly, or pick another source."
+        )
+        return
+
+    render_table(candidate_table(rows, asset_class))
+    st.caption(
+        md(
+            "**Evidence** counts supporting vs. cautionary factors from the screen "
+            "data alone. Open a candidate below for the full read, which pulls its "
+            "price history and headlines."
+        )
+    )
+
+    st.markdown("#### Full read")
+    labels = [f"{r['symbol']} — {(r.get('name') or '')[:38]}" for r in rows]
+    picked = st.selectbox(
+        "Candidate", labels, key="disc_pick", label_visibility="collapsed"
+    )
+    candidate = rows[labels.index(picked)]
+
+    read_col, add_col = st.columns([3, 1])
+    with read_col:
+        run = st.button(f"Analyse {candidate['symbol']}", key="disc_read")
+    with add_col:
+        already = any(
+            w["symbol"] == candidate["symbol"] for w in load_watchlist(asset_class)
+        )
+        if already:
+            st.caption("Already watched.")
+        elif st.button("Add to watchlist", key="disc_add", width="stretch"):
+            db.add_watchlist_item(
+                candidate["symbol"], asset_class, candidate.get("name"),
+                candidate.get("source_id"), candidate.get("pair_created_at"),
+            )
+            flash("success", f"Added {candidate['symbol']} — the collector picks it up next cycle.")
+            refresh_data()
+            st.rerun()
+
+    if run:
+        st.session_state["disc_read_for"] = candidate["symbol"]
+    if st.session_state.get("disc_read_for") != candidate["symbol"]:
+        st.caption("Pick a candidate and hit Analyse for the full evidence read.")
+        return
+
+    with st.spinner(f"Pulling history and headlines for {candidate['symbol']}…"):
+        read = deep_read(candidate["symbol"], candidate)
+
+    tone = "ti-up" if (read.change_24h or 0) >= 0 else "ti-down"
+    st.markdown(
+        f"<div class='ti-read-headline {tone}'>{html_lib.escape(read.headline)}</div>"
+        f"<div class='ti-read-note'>{html_lib.escape(read.history_note)}</div>",
+        unsafe_allow_html=True,
+    )
+    render_factor_grid(read.factors)
+    if read.news:
+        with st.expander(f"The {len(read.news)} headlines this read used"):
+            st.markdown(news_html(read.news[:12]), unsafe_allow_html=True)
+    else:
+        st.caption(
+            "No headlines found for this symbol in the last 24h — the move, if "
+            "there is one, is unexplained by news this tool can see."
+        )
+
+
+# --------------------------------------------------------------------------
 # Portfolio tab
 # --------------------------------------------------------------------------
 
@@ -1310,10 +1506,12 @@ def main() -> None:
 
     drain_flash()
 
-    tabs = st.tabs([label for _, label in ASSET_TABS] + ["Portfolio"])
+    tabs = st.tabs([label for _, label in ASSET_TABS] + ["Discover", "Portfolio"])
     for tab, (asset_class, label) in zip(tabs, ASSET_TABS):
         with tab:
             render_asset_tab(asset_class, label, snapshots)
+    with tabs[-2]:
+        render_discover_tab()
     with tabs[-1]:
         render_portfolio_tab(snapshots)
 

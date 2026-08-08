@@ -186,8 +186,10 @@ def _parse_feed(xml_text: str) -> list[dict[str, Any]]:
     return items
 
 
-def fetch_news() -> int:
-    entries = db.get_watchlist("crypto") + db.get_watchlist("meme")
+def fetch_news(entries: list[dict[str, Any]] | None = None) -> int:
+    """Match feed headlines to watched coins, or to an explicit entry list."""
+    if entries is None:
+        entries = db.get_watchlist("crypto") + db.get_watchlist("meme")
     if not entries:
         return 0
 

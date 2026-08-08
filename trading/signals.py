@@ -430,6 +430,101 @@ def _build_factors(read: Readout) -> list[Factor]:
     return factors
 
 
+def screen_factors(candidate: dict[str, Any]) -> list[Factor]:
+    """A cheap read over a discovery candidate, from screener fields alone.
+
+    Same vocabulary as analyze(), but no extra requests — so a whole screen can
+    be ranked at once. The deep read is what pulls history and headlines.
+    """
+    factors: list[Factor] = []
+    change = candidate.get("change_24h")
+    move_up = (change or 0) >= 0
+
+    ratio = candidate.get("volume_ratio")
+    if ratio is not None:
+        if candidate["asset_class"] == "stock":
+            if ratio >= 2.0:
+                factors.append(Factor("Volume", f"{ratio:.1f}x its 3-month average — heavy participation.", "supportive"))
+            elif ratio >= 1.25:
+                factors.append(Factor("Volume", f"{ratio:.1f}x its 3-month average — above normal.", "supportive"))
+            elif ratio <= 0.8:
+                factors.append(Factor("Volume", f"{ratio:.1f}x its 3-month average — the move is thinly traded.", "cautionary"))
+            else:
+                factors.append(Factor("Volume", f"{ratio:.1f}x its 3-month average.", "neutral"))
+        else:
+            # Turnover: daily volume against market cap.
+            pct = ratio * 100
+            if pct >= 15:
+                factors.append(Factor("Turnover", f"24h volume is {pct:.0f}% of market cap — very actively traded.", "supportive"))
+            elif pct >= 3:
+                factors.append(Factor("Turnover", f"24h volume is {pct:.0f}% of market cap — healthy activity.", "supportive"))
+            else:
+                factors.append(Factor("Turnover", f"24h volume is only {pct:.1f}% of market cap — quiet.", "cautionary"))
+
+    position = candidate.get("range_position")
+    if position is not None:
+        pct = position * 100
+        if pct >= 95:
+            factors.append(Factor("Range", f"At {pct:.0f}% of its range — buying the very top of it.", "cautionary"))
+        elif pct >= 60:
+            factors.append(Factor("Range", f"At {pct:.0f}% of its range — strength, not yet the extreme.", "supportive"))
+        elif pct <= 10:
+            factors.append(Factor("Range", f"At {pct:.0f}% of its range — near the bottom.", "cautionary"))
+        else:
+            factors.append(Factor("Range", f"At {pct:.0f}% of its range.", "neutral"))
+
+    vs_50d = candidate.get("vs_50d")
+    if vs_50d is not None:
+        pct = vs_50d * 100 if abs(vs_50d) < 5 else vs_50d  # yfinance returns a fraction
+        if pct > 60:
+            factors.append(Factor("Trend", f"{pct:+.0f}% vs. its 50-day average — a long way extended.", "cautionary"))
+        elif pct > 0:
+            factors.append(Factor("Trend", f"{pct:+.0f}% vs. its 50-day average — above trend.", "supportive"))
+        else:
+            factors.append(Factor("Trend", f"{pct:+.0f}% vs. its 50-day average — below trend.", "cautionary"))
+
+    cap = candidate.get("market_cap")
+    if cap is not None:
+        floor = 3e8 if candidate["asset_class"] == "stock" else 5e7
+        if cap < floor:
+            factors.append(Factor("Size", f"${cap:,.0f} market cap — small enough to be pushed around.", "cautionary"))
+        else:
+            factors.append(Factor("Size", f"${cap:,.0f} market cap.", "neutral"))
+
+    liquidity = candidate.get("liquidity_usd")
+    if liquidity is not None and liquidity < config.THIN_LIQUIDITY_USD:
+        factors.append(Factor("Liquidity", f"${liquidity:,.0f} pool — thin and cheap to move.", "cautionary"))
+
+    if change is not None and abs(change) >= 20 and move_up:
+        factors.append(Factor(
+            "Move size",
+            f"Already {change:+.1f}% on the day — most of the move may be behind it.",
+            "cautionary",
+        ))
+
+    return factors
+
+
+def rank_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Attach screen factors and order by net evidence, then by move size."""
+    scored = []
+    for candidate in candidates:
+        factors = screen_factors(candidate)
+        supportive = sum(1 for f in factors if f.stance == "supportive")
+        cautionary = sum(1 for f in factors if f.stance == "cautionary")
+        scored.append(
+            {
+                **candidate,
+                "factors": factors,
+                "supportive": supportive,
+                "cautionary": cautionary,
+                "net": supportive - cautionary,
+            }
+        )
+    scored.sort(key=lambda c: (c["net"], abs(c.get("change_24h") or 0)), reverse=True)
+    return scored
+
+
 def scan(asset_class: str | None = None) -> list[dict[str, Any]]:
     """Cheap pass over the watchlist to rank by 24h move. Snapshots only."""
     watchlist = db.get_watchlist(asset_class)

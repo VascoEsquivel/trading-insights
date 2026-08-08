@@ -156,11 +156,15 @@ def fetch_candles(symbol: str, period: str = "1mo", interval: str = "1d"):
 # --------------------------------------------------------------------------
 
 
-def fetch_news(days_back: int = 3) -> int:
+def fetch_news(days_back: int = 3, symbols: list[str] | None = None) -> int:
+    """Company news for the watched stocks, or for an explicit list.
+
+    Discovery passes symbols directly, since candidates are off-watchlist.
+    """
     if not config.FINNHUB_API_KEY:
         return 0
 
-    symbols = _stock_symbols()
+    symbols = symbols if symbols is not None else _stock_symbols()
     today = db.utcnow().date()
     frm = (db.utcnow() - timedelta(days=days_back)).date()
     rows: list[dict[str, Any]] = []
