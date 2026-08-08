@@ -97,16 +97,6 @@ def load_equity_curve():
     return portfolio.get_equity_curve()
 
 
-@st.cache_data(ttl=config.MEME_TRENDING_INTERVAL, show_spinner="Asking DexScreener…")
-def load_trending():
-    """Boosted tokens, resolved to their deepest pool.
-
-    Button-gated rather than automatic: resolving each token is its own request,
-    and this is discovery, not something the dashboard needs on every rerun.
-    """
-    return meme_source.fetch_trending()
-
-
 # --------------------------------------------------------------------------
 # Formatting
 # --------------------------------------------------------------------------
@@ -202,27 +192,22 @@ def newest_snapshot_time(snapshots: dict) -> str | None:
 
 
 def render_sidebar(snapshots: dict) -> None:
+    """Controls only.
+
+    Freshness lives in the hero chip, which is always on screen; repeating it
+    here as a coloured banner was the loudest thing in the sidebar and said
+    nothing the header did not.
+    """
     with st.sidebar:
         st.markdown("### Trading Insights")
-        st.caption("Paper trading only. No brokerage or exchange is ever linked.")
 
         newest = newest_snapshot_time(snapshots)
-        when = db.from_iso(newest)
-        if when is None:
+        if db.from_iso(newest) is None:
             st.error(
                 "No price data yet. Start the collector:\n\n"
                 "`python -m collector.scheduler`"
             )
-        else:
-            stale_seconds = (datetime.now(timezone.utc) - when).total_seconds()
-            if stale_seconds > 300:
-                st.warning(
-                    f"Last update {fmt_when(newest)} — the collector may not be running."
-                )
-            else:
-                st.success(f"Data current as of {fmt_when(newest)}")
 
-        st.divider()
         st.checkbox(
             "Auto-refresh",
             value=True,
@@ -235,11 +220,16 @@ def render_sidebar(snapshots: dict) -> None:
 
         st.divider()
         st.caption(
-            f"Reddit sentiment: {'on' if config.ENABLE_REDDIT else 'off'}  \n"
-            f"Snapshot cadences: stocks {config.STOCK_QUOTE_INTERVAL}s · "
-            f"crypto {config.CRYPTO_PRICE_INTERVAL}s · "
-            f"meme {config.MEME_PAIR_INTERVAL}s"
+            "Paper trading only. No brokerage or exchange is ever linked, and "
+            "nothing here is advice."
         )
+        with st.expander("Collector settings"):
+            st.caption(
+                f"Stock quotes every {config.STOCK_QUOTE_INTERVAL}s  \n"
+                f"Crypto prices every {config.CRYPTO_PRICE_INTERVAL}s  \n"
+                f"Meme pairs every {config.MEME_PAIR_INTERVAL}s  \n"
+                f"Reddit sentiment: {'on' if config.ENABLE_REDDIT else 'off'}"
+            )
 
     _auto_refresh_tick()
 
@@ -902,77 +892,6 @@ def render_signal_desk(asset_class: str, entries: list[dict], snapshots: dict) -
 
 
 # --------------------------------------------------------------------------
-# Trending discovery (meme tab only)
-# --------------------------------------------------------------------------
-
-
-def render_trending() -> None:
-    st.markdown("#### Trending on DexScreener")
-    left, right = st.columns([1, 3])
-    if left.button("Load trending", key="load_trending"):
-        st.session_state["show_trending"] = True
-        load_trending.clear()
-    if not st.session_state.get("show_trending"):
-        right.caption(
-            "Currently-boosted tokens, with the same risk context as the "
-            "watchlist. Nothing is added automatically."
-        )
-        return
-
-    rows = load_trending()
-    if not rows:
-        st.caption("DexScreener returned no trending pairs just now.")
-        return
-
-    watched = {e["source_id"] for e in load_watchlist("meme")}
-    table = pd.DataFrame(
-        [
-            {
-                "Symbol": r["symbol"],
-                "Name": r["name"],
-                "Chain": r["chain"],
-                "Price": fmt_price(r["price"]),
-                "24h": fmt_pct(r["pct_change_24h"]),
-                "Volume 24h": fmt_compact(r["volume_24h"]),
-                "Liquidity": fmt_compact(r["liquidity_usd"]),
-                "Market cap": fmt_compact(r["market_cap"]),
-                "Age": fmt_age(r["pair_created_at"]),
-                "Risk": risk_flags(
-                    {"pair_created_at": r["pair_created_at"]},
-                    {"liquidity_usd": r["liquidity_usd"]},
-                ),
-            }
-            for r in rows
-        ]
-    )
-    render_table(table)
-
-    addable = [r for r in rows if r["source_id"] not in watched]
-    if not addable:
-        st.caption("All of these are already on the watchlist.")
-        return
-    pick_col, btn_col = st.columns([3, 1])
-    choice = pick_col.selectbox(
-        "Add to watchlist",
-        [f"{r['symbol']} — {r['name']}" for r in addable],
-        key="trending_pick",
-        label_visibility="collapsed",
-    )
-    with btn_col:
-        if st.button("Add", key="trending_add", width="stretch"):
-            target = addable[
-                [f"{r['symbol']} — {r['name']}" for r in addable].index(choice)
-            ]
-            db.add_watchlist_item(
-                target["symbol"], "meme", target["name"],
-                target["source_id"], target["pair_created_at"],
-            )
-            flash("success", f"Added {target['symbol']} to the meme watchlist.")
-            refresh_data()
-            st.rerun()
-
-
-# --------------------------------------------------------------------------
 # News
 # --------------------------------------------------------------------------
 
@@ -1110,14 +1029,10 @@ def render_sentiment(entries: list[dict]) -> None:
 
 def render_asset_tab(asset_class: str, label: str, snapshots: dict) -> None:
     entries = load_watchlist(asset_class)
-    st.subheader(f"{label} watchlist")
+    st.markdown("#### Watchlist")
     render_watchlist(entries, snapshots, asset_class)
-    render_watchlist_manager(asset_class, entries)
     st.divider()
     render_signal_desk(asset_class, entries, snapshots)
-    if asset_class == "meme":
-        st.divider()
-        render_trending()
     st.divider()
     render_chart_section(asset_class, entries)
     st.divider()
@@ -1128,6 +1043,10 @@ def render_asset_tab(asset_class: str, label: str, snapshots: dict) -> None:
         render_news(entries)
     with social_col:
         render_sentiment(entries)
+    st.divider()
+    # Editing the watchlist is an occasional action, not something you read —
+    # it sat between the table and the analysis and broke the flow.
+    render_watchlist_manager(asset_class, entries)
 
 
 # --------------------------------------------------------------------------
@@ -1274,7 +1193,6 @@ def render_candidate_rows(rows: list[dict], asset_class: str, watched: set[str])
 
 
 def render_discover_tab() -> None:
-    st.subheader("Discover")
     st.caption(
         "Scans the whole market rather than your watchlist, then ranks what it "
         "finds on the same evidence the signal desk uses — so the top row is not "
@@ -1282,10 +1200,10 @@ def render_discover_tab() -> None:
         "that has already run is often the worst entry, not the best."
     )
 
-    source = st.radio(
-        "Source", ["Stocks", "Crypto", "Meme coins"],
-        horizontal=True, key="disc_source", label_visibility="collapsed",
-    )
+    source = st.segmented_control(
+        "Source", ["Stocks", "Crypto", "Meme coins"], default="Stocks",
+        key="disc_source", label_visibility="collapsed",
+    ) or "Stocks"
 
     control, action = st.columns([3, 1])
     if source == "Stocks":
@@ -1576,7 +1494,6 @@ def render_hot_news(rows: list[dict]) -> None:
 
 
 def render_recommended_tab() -> None:
-    st.subheader("Recommended")
     stats = load_pattern_stats()
 
     if not stats:
@@ -1830,11 +1747,11 @@ def render_equity_curve(starting_balance: float) -> None:
 
 
 def render_portfolio_tab(snapshots: dict) -> None:
-    st.subheader("Paper portfolio")
 
-    choice = st.radio(
-        "Asset class", list(FILTER_LABELS), horizontal=True, key="pf_filter"
-    )
+    choice = st.segmented_control(
+        "Asset class", list(FILTER_LABELS), default="All",
+        key="pf_filter", label_visibility="collapsed",
+    ) or "All"
     asset_class = FILTER_LABELS[choice]
 
     prices = {s: v["price"] for s, v in snapshots.items() if v.get("price") is not None}
@@ -1949,17 +1866,33 @@ def main() -> None:
 
     drain_flash()
 
-    tabs = st.tabs(
-        [label for _, label in ASSET_TABS] + ["Discover", "Recommended", "Portfolio"]
-    )
-    for tab, (asset_class, label) in zip(tabs, ASSET_TABS):
-        with tab:
-            render_asset_tab(asset_class, label, snapshots)
-    with tabs[-3]:
-        render_discover_tab()
-    with tabs[-2]:
-        render_recommended_tab()
-    with tabs[-1]:
+    # Three destinations, not six. The asset tabs were the same page with a
+    # different filter, and Discover/Recommended are both "find something new" —
+    # so those become sub-navigation instead of competing for the top bar.
+    # It is also cheaper: st.tabs renders every panel on every rerun, whereas
+    # only the selected branch below executes.
+    markets, ideas, portfolio_tab = st.tabs(["Markets", "Ideas", "Portfolio"])
+
+    with markets:
+        labels = [label for _, label in ASSET_TABS]
+        picked = st.segmented_control(
+            "Asset class", labels, default=labels[0],
+            key="market_class", label_visibility="collapsed",
+        ) or labels[0]
+        asset_class = next(a for a, label in ASSET_TABS if label == picked)
+        render_asset_tab(asset_class, picked, snapshots)
+
+    with ideas:
+        mode = st.segmented_control(
+            "Mode", ["Discover", "Recommended"], default="Discover",
+            key="ideas_mode", label_visibility="collapsed",
+        ) or "Discover"
+        if mode == "Discover":
+            render_discover_tab()
+        else:
+            render_recommended_tab()
+
+    with portfolio_tab:
         render_portfolio_tab(snapshots)
 
 

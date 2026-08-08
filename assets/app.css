@@ -81,6 +81,32 @@
 [data-baseweb="tab-list"] [data-baseweb="tab-highlight"],
 [data-baseweb="tab-list"] [data-baseweb="tab-border"] { display: none; }
 
+/* ---------- sub-navigation (segmented control) ---------- */
+
+/* Streamlit renders this as stButtonGroup with two button testids — plain and
+   ...Active — rather than an aria-checked state. */
+[data-testid="stButtonGroup"] { margin-bottom: 1rem; }
+[data-testid="stButtonGroup"] [data-baseweb="button-group"] {
+  gap: .3rem; background: transparent; border: none; padding: 0;
+}
+[data-testid^="stBaseButton-segmented_control"] {
+  background: transparent !important;
+  border: 1px solid var(--ti-border) !important;
+  border-radius: .6rem !important;
+  padding: .3rem .9rem !important;
+  font-size: .82rem !important; font-weight: 600 !important;
+  color: var(--ti-muted) !important;
+  transition: all .15s ease;
+}
+[data-testid^="stBaseButton-segmented_control"]:hover {
+  color: var(--ti-text) !important; border-color: var(--ti-border-lit) !important;
+}
+[data-testid="stBaseButton-segmented_controlActive"] {
+  background: linear-gradient(135deg, rgba(34,211,238,.18), rgba(167,139,250,.18)) !important;
+  color: var(--ti-text) !important;
+  border-color: var(--ti-cyan) !important;
+}
+
 /* ---------- section headings ---------- */
 
 [data-testid="stMain"] h2, [data-testid="stMain"] h3 {
@@ -155,6 +181,15 @@
 [data-testid="stMetricValue"] {
   font-family: var(--ti-mono); font-size: 1.5rem !important; font-weight: 600;
   letter-spacing: -.02em;
+}
+/* Four metric cards on a narrow pane were clipping "$10,000.00" to "$10,000…".
+   Scale the figure down rather than truncate it — the number is the point. */
+@media (max-width: 1100px) {
+  [data-testid="stMetricValue"] { font-size: 1.15rem !important; }
+}
+@media (max-width: 820px) {
+  [data-testid="stMetricValue"] { font-size: 1rem !important; }
+  [data-testid="stMetric"] { padding: .7rem .75rem; }
 }
 [data-testid="stMetricDelta"] { font-size: .78rem !important; font-weight: 650; }
 
