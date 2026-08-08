@@ -1,0 +1,8 @@
+streamlit>=1.37
+plotly>=5.20
+pandas>=2.0
+requests>=2.31
+yfinance>=0.2.40
+praw>=7.7
+vaderSentiment>=3.3
+python-dotenv>=1.0
