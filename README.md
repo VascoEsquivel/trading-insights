@@ -202,6 +202,35 @@ CoinGecko data resampled to daily closes for coins, and collected
 `price_snapshots` for DexScreener-only tokens (where the read says so and marks
 itself provisional).
 
+## Paper trading — buying things to see how you'd do
+
+You start with $10,000 of virtual cash. Nothing is ever sent to a broker.
+
+There are two ways in:
+
+- **Markets → Buy / sell**, directly under the watchlist table. Pick a symbol,
+  a side and a quantity; it fills at the latest stored price. Fractional
+  quantities are fine.
+- **Ideas → Discover or Recommended**, on any candidate you've opened. The
+  quick-buy sits under the evidence so you can act on a name while you're
+  reading about it.
+
+Buying from Ideas does two extra things, because those tickers are not on your
+watchlist and so have no stored price: it adds the symbol to the watchlist (an
+untracked holding could never be marked to market afterwards) and writes a
+price snapshot at the fill price, so the position values correctly right away
+rather than waiting for the collector's next cycle.
+
+**Positions with no current price are held at cost, not at zero.** That
+distinction matters more than it sounds: valuing them at zero made a
+just-executed buy look like an instant total loss of the amount spent. The
+Portfolio tab flags any line it can't price.
+
+The Portfolio tab is where you see how you're doing — cash, total value,
+realized and unrealized PnL, every position marked to market, the full trade
+log, and an equity curve the collector extends each cycle. There's an
+asset-class filter, and a reset if you want to start over.
+
 ## Recommended — measured base rates, not predictions
 
 Build the study first (a couple of minutes, ~250 tickers, ~12 years of daily

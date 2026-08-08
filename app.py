@@ -725,7 +725,7 @@ def render_trade_form(asset_class: str, entries: list[dict], snapshots: dict) ->
         st.caption("No priced symbols to trade yet — waiting on the collector.")
         return
 
-    st.markdown("**Place a paper order**")
+    st.markdown("#### Buy / sell")
     # Side needs real width or the radio labels wrap one letter per line.
     cols = st.columns([2.2, 1.5, 2, 1.8])
     symbol = cols[0].selectbox("Symbol", tradable, key=f"trade_sym_{asset_class}")
@@ -772,6 +772,74 @@ def render_trade_form(asset_class: str, entries: list[dict], snapshots: dict) ->
             )
         refresh_data()
         st.rerun()
+
+
+def render_quick_buy(
+    symbol: str,
+    asset_class: str,
+    price: float | None,
+    key: str,
+    name: str | None = None,
+    source_id: str | None = None,
+    pair_created_at: str | None = None,
+) -> None:
+    """Buy a name from wherever you happen to be reading about it.
+
+    Discover and Recommended surface tickers that are not on the watchlist and
+    so have no stored snapshot, which is what execute_trade normally prices
+    against. The live price from the scan is passed explicitly instead, and the
+    symbol is added to the watchlist on the way through — owning something the
+    collector isn't tracking would leave the position unpriceable afterwards.
+    """
+    if price is None or price <= 0:
+        st.caption("No live price for this symbol, so it can't be traded here.")
+        return
+
+    account = portfolio.get_account()
+    position = portfolio.get_position(symbol)
+    held = position["quantity"] if position else 0.0
+
+    qty_col, buy_col, info_col = st.columns([1.2, 1, 3])
+    quantity = qty_col.number_input(
+        "Quantity", min_value=0.0, value=1.0, step=1.0,
+        format="%.4f", key=f"qb_qty_{key}", label_visibility="collapsed",
+    )
+    with buy_col:
+        clicked = st.button(
+            f"Buy {symbol}", key=f"qb_go_{key}", width="stretch", type="primary"
+        )
+    info_col.caption(
+        md(
+            f"at {fmt_price(price)} · costs **${price * quantity:,.2f}** · "
+            f"cash ${account['cash_balance']:,.2f}"
+            + (f" · already holding {held:g}" if held else "")
+        )
+    )
+
+    if not clicked:
+        return
+    try:
+        db.add_watchlist_item(symbol, asset_class, name or symbol, source_id, pair_created_at)
+        # Seed a snapshot at the fill price so the position is marked to market
+        # straight away, instead of waiting for the collector's next cycle.
+        db.insert_price_snapshots([{
+            "symbol": symbol, "asset_class": asset_class, "price": price,
+            "volume": None, "pct_change_24h": None, "liquidity_usd": None,
+            "market_cap": None, "fetched_at": db.iso_now(),
+        }])
+        result = portfolio.execute_trade(
+            symbol, asset_class, "buy", quantity, price=price
+        )
+    except portfolio.TradeError as exc:
+        flash("error", str(exc))
+    else:
+        flash(
+            "success",
+            f"Bought {result['quantity']:g} {symbol} at {fmt_price(result['price'])}. "
+            "Added to your watchlist so it stays priced — see the Portfolio tab.",
+        )
+    refresh_data()
+    st.rerun()
 
 
 # --------------------------------------------------------------------------
@@ -1032,11 +1100,13 @@ def render_asset_tab(asset_class: str, label: str, snapshots: dict) -> None:
     st.markdown("#### Watchlist")
     render_watchlist(entries, snapshots, asset_class)
     st.divider()
+    # Directly under the watchlist: it was below the chart and signal desk,
+    # which put the one action on the page three scrolls from the prices.
+    render_trade_form(asset_class, entries, snapshots)
+    st.divider()
     render_signal_desk(asset_class, entries, snapshots)
     st.divider()
     render_chart_section(asset_class, entries)
-    st.divider()
-    render_trade_form(asset_class, entries, snapshots)
     st.divider()
     news_col, social_col = st.columns([3, 2])
     with news_col:
@@ -1287,6 +1357,12 @@ def render_discover_tab() -> None:
         unsafe_allow_html=True,
     )
     render_factor_grid(read.factors)
+    render_quick_buy(
+        candidate["symbol"], asset_class, candidate.get("price"),
+        key=f"disc_{candidate['symbol']}", name=candidate.get("name"),
+        source_id=candidate.get("source_id"),
+        pair_created_at=candidate.get("pair_created_at"),
+    )
     if read.news:
         with st.expander(f"The {len(read.news)} headlines this read used"):
             st.markdown(news_html(read.news[:12]), unsafe_allow_html=True)
@@ -1649,6 +1725,10 @@ backtest of a strategy, and none of it is advice.
         )
     )
     render_setup_cards(chosen["setups"])
+    render_quick_buy(
+        chosen["ticker"], "stock", chosen.get("price"),
+        key=f"rec_{chosen['ticker']}", name=chosen["ticker"],
+    )
     st.caption(
         f"Matching a setup means {chosen['ticker']} currently looks like the "
         "historical cases — not that it will do the same thing. On the best of "

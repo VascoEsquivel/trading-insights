@@ -207,8 +207,11 @@ def position_rows(
         price = prices.get(pos["symbol"])
         qty, basis = pos["quantity"], pos["avg_cost_basis"]
         cost = qty * basis
-        value = qty * price if price is not None else None
-        unrealized = (value - cost) if value is not None else None
+        # An unpriced position is held at cost, not at zero. Zero made a
+        # just-executed buy look like an instant total loss of the amount
+        # spent, because the collector had not yet snapshotted the symbol.
+        value = qty * price if price is not None else cost
+        unrealized = (value - cost) if price is not None else None
         rows.append(
             {
                 **pos,
@@ -284,10 +287,11 @@ def record_portfolio_snapshot(prices: dict[str, float] | None = None) -> dict[st
     """Append one point to the equity curve. Called each collector cycle."""
     prices = db.latest_prices() if prices is None else prices
     acct = get_account()
+    # Same rule as position_rows: value what we can't price at cost rather than
+    # dropping it, or the equity curve steps down the moment a buy executes.
     holdings = sum(
-        (p["quantity"] * prices[p["symbol"]])
+        p["quantity"] * prices.get(p["symbol"], p["avg_cost_basis"])
         for p in get_positions()
-        if p["symbol"] in prices
     )
     total = acct["cash_balance"] + holdings
     snapshot_at = db.iso_now()
