@@ -111,6 +111,41 @@ Verified against live responses in August 2026:
 - **Not used:** Binance (blocks US IPs) and X/Twitter (pay-per-use only since
   Feb 2026, no free tier).
 
+## Using it
+
+Each asset tab has the same shape: watchlist table, add/remove controls, a
+chart, an order ticket, and a news feed. The Meme tab adds two things —
+liquidity/market-cap/age columns with `thin` and `new` badges, and a **Trending
+on DexScreener** section that resolves currently-boosted tokens to their
+deepest pool. Trending is button-gated rather than automatic, because resolving
+each token costs its own request, and nothing is ever added to the watchlist
+without you clicking Add.
+
+The Portfolio tab shows cash, total value, PnL, positions marked to market, the
+equity curve, and the trade log, with an asset-class filter. Cash is a single
+shared balance, so it is reported unfiltered.
+
+Charts pick their source automatically: yfinance candles for stocks, CoinGecko
+OHLC for coins with a CoinGecko id, and a line chart built from collected
+`price_snapshots` for DexScreener-only tokens.
+
+## Known rough edges
+
+- **Finnhub company news is broad.** Its `/company-news` feed tags general
+  market-wire stories with a symbol, so an NVDA query returns items that only
+  loosely concern NVDA. That is the source's tagging, not a filter bug.
+- **Sentiment counts are per ticker, not per token.** Matching is on ticker,
+  cashtag, and coin name, so the several tokens called PEPE share one count.
+- **Liquidity and age are blank for CoinGecko-priced memes.** DOGE, SHIB and
+  PEPE trade mainly on exchanges; a DEX pool number would misrepresent their
+  real depth, so the columns are left empty rather than filled with something
+  misleading.
+- **Watchlist tables are static HTML, not `st.dataframe`.** Streamlit's
+  dataframe is a canvas grid that measures zero width inside a tab hidden on
+  first paint, so every tab but the first rendered collapsed. The cells are
+  pre-formatted strings anyway, where the grid's sorting would order "$1.30T"
+  before "$922.11K" lexicographically.
+
 ## Notes on the schema
 
 `news_items` is uniquely keyed on `(symbol, url)` rather than `url` alone. One

@@ -7,15 +7,18 @@ would duplicate or orphan them.
 """
 from __future__ import annotations
 
+import html as html_lib
 import time
 from datetime import datetime, timezone
 
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
 import config
 from collector import crypto as crypto_source
 from collector import memecoins as meme_source
+from collector import stocks as stock_source
 from trading import db, portfolio
 
 st.set_page_config(
@@ -67,6 +70,38 @@ def load_social(symbols: tuple[str, ...]):
 
 def refresh_data() -> None:
     st.cache_data.clear()
+
+
+# Chart sources are cached far longer than tables: yfinance is scraped, and
+# every CoinGecko OHLC call eats into the 10k/month cap.
+@st.cache_data(ttl=300, show_spinner=False)
+def load_stock_candles(symbol: str, period: str, interval: str):
+    return stock_source.fetch_candles(symbol, period, interval)
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def load_crypto_ohlc(coin_id: str, days: int):
+    return crypto_source.fetch_ohlc(coin_id, days)
+
+
+@st.cache_data(ttl=TTL)
+def load_snapshot_history(symbol: str, hours: int):
+    return db.snapshot_history(symbol, hours)
+
+
+@st.cache_data(ttl=TTL)
+def load_equity_curve():
+    return portfolio.get_equity_curve()
+
+
+@st.cache_data(ttl=config.MEME_TRENDING_INTERVAL, show_spinner="Asking DexScreener…")
+def load_trending():
+    """Boosted tokens, resolved to their deepest pool.
+
+    Button-gated rather than automatic: resolving each token is its own request,
+    and this is discovery, not something the dashboard needs on every rerun.
+    """
+    return meme_source.fetch_trending()
 
 
 # --------------------------------------------------------------------------
@@ -225,6 +260,119 @@ def _auto_refresh_tick() -> None:
 # --------------------------------------------------------------------------
 
 
+TABLE_CSS = """
+<style>
+.ti-wrap { overflow-x: auto; margin-bottom: .35rem; }
+.ti-table { border-collapse: collapse; width: 100%; font-size: .875rem;
+            font-variant-numeric: tabular-nums; }
+.ti-table th { text-align: left; font-weight: 600; opacity: .65;
+               padding: .4rem .7rem; border-bottom: 1px solid rgba(128,128,128,.35);
+               white-space: nowrap; }
+.ti-table td { padding: .4rem .7rem;
+               border-bottom: 1px solid rgba(128,128,128,.15); white-space: nowrap; }
+.ti-table tr:last-child td { border-bottom: none; }
+.ti-table td.num, .ti-table th.num { text-align: right; }
+.ti-table td.sym { font-weight: 600; }
+.ti-up { color: #16a34a; }
+.ti-down { color: #dc2626; }
+.ti-pill { display: inline-block; padding: .05rem .4rem; border-radius: .6rem;
+           font-size: .72rem; font-weight: 600; letter-spacing: .02em; }
+.ti-pill.thin { background: rgba(234,179,8,.18); color: #a16207; }
+.ti-pill.new  { background: rgba(59,130,246,.18); color: #1d4ed8; }
+@media (prefers-color-scheme: dark) {
+  .ti-pill.thin { color: #fde047; }
+  .ti-pill.new  { color: #93c5fd; }
+}
+</style>
+"""
+
+# Columns whose sign should be coloured, and columns that render as pills.
+SIGNED_COLUMNS = {"24h", "Unrealized", "Unrealized %", "Realized PnL"}
+NUMERIC_COLUMNS = {
+    "Price", "24h", "Volume 24h", "Liquidity", "Market cap", "Age", "Quantity",
+    "Avg cost", "Cost basis", "Value", "Unrealized", "Unrealized %",
+    "Realized PnL", "Updated", "When",
+}
+
+
+def _signed_cell(text: str) -> str:
+    """Colour a signed number without inventing a judgement about it."""
+    if text.startswith("+"):
+        return f"<span class='ti-up'>{text}</span>"
+    if text.startswith("-") or text.startswith("$-"):
+        return f"<span class='ti-down'>{text}</span>"
+    return text
+
+
+def _risk_cell(text: str) -> str:
+    if text == DASH:
+        return text
+    return " ".join(
+        f"<span class='ti-pill {flag}'>{flag}</span>"
+        for flag in (f.strip() for f in text.split("·"))
+        if flag in ("thin", "new")
+    )
+
+
+def render_table(frame: pd.DataFrame) -> None:
+    """Static HTML table.
+
+    Streamlit's dataframe is a canvas grid that measures zero width inside a
+    tab that is hidden on first paint, so tables in every tab but the first
+    render collapsed and stay collapsed across tab switches. Every cell here is
+    already a formatted string, so a plain table loses nothing — and it avoids
+    offering a sort that would order "$1.30T" before "$922.11K" lexicographically.
+
+    Cell values include DexScreener token names, which are attacker-controlled,
+    so everything is HTML-escaped before any decoration is applied.
+    """
+    if frame.empty:
+        return
+    head = "".join(
+        f"<th class='{'num' if c in NUMERIC_COLUMNS else ''}'>{html_lib.escape(str(c))}</th>"
+        for c in frame.columns
+    )
+    body = []
+    for _, row in frame.iterrows():
+        cells = []
+        for column in frame.columns:
+            raw = "" if row[column] is None else str(row[column])
+            text = html_lib.escape(raw)
+            if column in SIGNED_COLUMNS:
+                text = _signed_cell(text)
+            elif column == "Risk":
+                text = _risk_cell(text)
+            classes = []
+            if column in NUMERIC_COLUMNS:
+                classes.append("num")
+            if column == "Symbol":
+                classes.append("sym")
+            cells.append(f"<td class='{' '.join(classes)}'>{text}</td>")
+        body.append(f"<tr>{''.join(cells)}</tr>")
+
+    st.markdown(
+        f"<div class='ti-wrap'><table class='ti-table'>"
+        f"<thead><tr>{head}</tr></thead><tbody>{''.join(body)}</tbody></table></div>",
+        unsafe_allow_html=True,
+    )
+
+
+def risk_flags(entry: dict, snap: dict) -> str:
+    """"thin" under $50k liquidity, "new" under 24h old.
+
+    These are the two numbers that separate a real move from an easily
+    manipulated one, so they are computed for every meme row, not on request.
+    """
+    flags = []
+    liquidity = snap.get("liquidity_usd")
+    if liquidity is not None and liquidity < config.THIN_LIQUIDITY_USD:
+        flags.append("thin")
+    age = age_hours(entry.get("pair_created_at"))
+    if age is not None and age < config.NEW_TOKEN_AGE_HOURS:
+        flags.append("new")
+    return " · ".join(flags) if flags else DASH
+
+
 def build_table(entries: list[dict], snapshots: dict, asset_class: str) -> pd.DataFrame:
     rows = []
     for entry in entries:
@@ -242,6 +390,7 @@ def build_table(entries: list[dict], snapshots: dict, asset_class: str) -> pd.Da
             row["Liquidity"] = fmt_compact(snap.get("liquidity_usd"))
             row["Market cap"] = fmt_compact(snap.get("market_cap"))
             row["Age"] = fmt_age(entry.get("pair_created_at"))
+            row["Risk"] = risk_flags(entry, snap)
         row["Updated"] = fmt_when(snap.get("fetched_at"))
         rows.append(row)
     return pd.DataFrame(rows)
@@ -252,7 +401,18 @@ def render_watchlist(entries: list[dict], snapshots: dict, asset_class: str) -> 
         st.info("Nothing on this watchlist yet — add a symbol below.")
         return
     table = build_table(entries, snapshots, asset_class)
-    st.dataframe(table, width="stretch", hide_index=True)
+    render_table(table)
+
+    if asset_class == "meme":
+        st.caption(
+            md(
+                f"**Risk** flags a pool under ${config.THIN_LIQUIDITY_USD:,.0f} "
+                f"liquidity as `thin` and a pair under "
+                f"{config.NEW_TOKEN_AGE_HOURS}h old as `new`. Liquidity and age "
+                "come from the DEX pair, so they are blank for coins priced via "
+                "CoinGecko (DOGE, SHIB, PEPE), which trade mainly on exchanges."
+            )
+        )
 
     missing = [e["symbol"] for e in entries if e["symbol"] not in snapshots]
     if missing:
@@ -260,6 +420,149 @@ def render_watchlist(entries: list[dict], snapshots: dict, asset_class: str) -> 
             f"No snapshot yet for {', '.join(missing)} — "
             "the collector picks new symbols up on its next cycle."
         )
+
+
+# --------------------------------------------------------------------------
+# Charts
+# --------------------------------------------------------------------------
+
+CANDLE_UP = "#26a69a"
+CANDLE_DOWN = "#ef5350"
+
+
+def style_chart(fig: go.Figure, title: str) -> go.Figure:
+    fig.update_layout(
+        title=title,
+        height=420,
+        margin=dict(l=10, r=10, t=48, b=10),
+        xaxis_rangeslider_visible=False,
+        showlegend=False,
+        hovermode="x unified",
+    )
+    fig.update_yaxes(tickformat=".8~g", title=None)
+    fig.update_xaxes(title=None)
+    return fig
+
+
+def candlestick(frame: pd.DataFrame, title: str) -> go.Figure:
+    fig = go.Figure(
+        go.Candlestick(
+            x=frame["t"],
+            open=frame["open"],
+            high=frame["high"],
+            low=frame["low"],
+            close=frame["close"],
+            increasing_line_color=CANDLE_UP,
+            decreasing_line_color=CANDLE_DOWN,
+        )
+    )
+    return style_chart(fig, title)
+
+
+def render_stock_chart(symbol: str) -> None:
+    period, interval = st.session_state.get(
+        f"range_{symbol}", ("1mo", "1d")
+    )
+    hist = load_stock_candles(symbol, period, interval)
+    if hist is None or len(hist) == 0:
+        st.warning(
+            f"No candles for {symbol} right now. yfinance scrapes Yahoo and "
+            "occasionally breaks — the rest of the tab is unaffected."
+        )
+        return
+    frame = pd.DataFrame(
+        {
+            "t": hist.index,
+            "open": hist["Open"].to_numpy(),
+            "high": hist["High"].to_numpy(),
+            "low": hist["Low"].to_numpy(),
+            "close": hist["Close"].to_numpy(),
+        }
+    )
+    st.plotly_chart(candlestick(frame, f"{symbol} · {period} · yfinance"), width="stretch")
+
+
+def render_coingecko_chart(symbol: str, coin_id: str, days: int) -> None:
+    raw = load_crypto_ohlc(coin_id, days)
+    if not raw:
+        st.warning(f"CoinGecko returned no OHLC for {coin_id}.")
+        return
+    frame = pd.DataFrame(raw, columns=["ts", "open", "high", "low", "close"])
+    frame["t"] = pd.to_datetime(frame["ts"], unit="ms", utc=True)
+    st.plotly_chart(
+        candlestick(frame, f"{symbol} · {days}d · CoinGecko OHLC"), width="stretch"
+    )
+
+
+def render_snapshot_chart(symbol: str, hours: int) -> None:
+    """DexScreener exposes no history, so this is drawn from what we collected."""
+    history = load_snapshot_history(symbol, hours)
+    points = [h for h in history if h.get("price") is not None]
+    if len(points) < 2:
+        st.info(
+            f"Only {len(points)} price point stored for {symbol}. DexScreener "
+            "publishes no historical OHLC, so this chart fills in as the "
+            f"collector runs (every {config.MEME_PAIR_INTERVAL}s)."
+        )
+        return
+    frame = pd.DataFrame(
+        {
+            "t": pd.to_datetime([p["fetched_at"] for p in points], utc=True, format="ISO8601"),
+            "price": [p["price"] for p in points],
+        }
+    )
+    fig = go.Figure(
+        go.Scatter(x=frame["t"], y=frame["price"], mode="lines", line=dict(width=2))
+    )
+    st.plotly_chart(
+        style_chart(fig, f"{symbol} · last {hours}h · collected snapshots"),
+        width="stretch",
+    )
+
+
+STOCK_RANGES = {
+    "5d (15m)": ("5d", "15m"),
+    "1mo (1d)": ("1mo", "1d"),
+    "3mo (1d)": ("3mo", "1d"),
+    "1y (1d)": ("1y", "1d"),
+}
+CG_RANGES = {"1d": 1, "7d": 7, "30d": 30, "90d": 90}
+SNAPSHOT_RANGES = {"6h": 6, "24h": 24, "48h": 48}
+
+
+def render_chart_section(asset_class: str, entries: list[dict]) -> None:
+    if not entries:
+        return
+    st.markdown("#### Chart")
+    pick_col, range_col = st.columns([2, 1])
+    symbol = pick_col.selectbox(
+        "Symbol", [e["symbol"] for e in entries],
+        key=f"chart_sym_{asset_class}", label_visibility="collapsed",
+    )
+    entry = next(e for e in entries if e["symbol"] == symbol)
+
+    if asset_class == "stock":
+        label = range_col.selectbox(
+            "Range", list(STOCK_RANGES), index=1,
+            key=f"chart_rng_{asset_class}", label_visibility="collapsed",
+        )
+        period, interval = STOCK_RANGES[label]
+        st.session_state[f"range_{symbol}"] = (period, interval)
+        render_stock_chart(symbol)
+    elif db.is_dex_source(entry.get("source_id")):
+        label = range_col.selectbox(
+            "Range", list(SNAPSHOT_RANGES), index=1,
+            key=f"chart_rng_{asset_class}", label_visibility="collapsed",
+        )
+        render_snapshot_chart(symbol, SNAPSHOT_RANGES[label])
+    elif entry.get("source_id"):
+        label = range_col.selectbox(
+            "Range", list(CG_RANGES), index=1,
+            key=f"chart_rng_{asset_class}", label_visibility="collapsed",
+        )
+        render_coingecko_chart(symbol, entry["source_id"], CG_RANGES[label])
+    else:
+        st.caption("No chart source for this symbol.")
 
 
 # --------------------------------------------------------------------------
@@ -458,6 +761,77 @@ def render_trade_form(asset_class: str, entries: list[dict], snapshots: dict) ->
 
 
 # --------------------------------------------------------------------------
+# Trending discovery (meme tab only)
+# --------------------------------------------------------------------------
+
+
+def render_trending() -> None:
+    st.markdown("#### Trending on DexScreener")
+    left, right = st.columns([1, 3])
+    if left.button("Load trending", key="load_trending"):
+        st.session_state["show_trending"] = True
+        load_trending.clear()
+    if not st.session_state.get("show_trending"):
+        right.caption(
+            "Currently-boosted tokens, with the same risk context as the "
+            "watchlist. Nothing is added automatically."
+        )
+        return
+
+    rows = load_trending()
+    if not rows:
+        st.caption("DexScreener returned no trending pairs just now.")
+        return
+
+    watched = {e["source_id"] for e in load_watchlist("meme")}
+    table = pd.DataFrame(
+        [
+            {
+                "Symbol": r["symbol"],
+                "Name": r["name"],
+                "Chain": r["chain"],
+                "Price": fmt_price(r["price"]),
+                "24h": fmt_pct(r["pct_change_24h"]),
+                "Volume 24h": fmt_compact(r["volume_24h"]),
+                "Liquidity": fmt_compact(r["liquidity_usd"]),
+                "Market cap": fmt_compact(r["market_cap"]),
+                "Age": fmt_age(r["pair_created_at"]),
+                "Risk": risk_flags(
+                    {"pair_created_at": r["pair_created_at"]},
+                    {"liquidity_usd": r["liquidity_usd"]},
+                ),
+            }
+            for r in rows
+        ]
+    )
+    render_table(table)
+
+    addable = [r for r in rows if r["source_id"] not in watched]
+    if not addable:
+        st.caption("All of these are already on the watchlist.")
+        return
+    pick_col, btn_col = st.columns([3, 1])
+    choice = pick_col.selectbox(
+        "Add to watchlist",
+        [f"{r['symbol']} — {r['name']}" for r in addable],
+        key="trending_pick",
+        label_visibility="collapsed",
+    )
+    with btn_col:
+        if st.button("Add", key="trending_add", width="stretch"):
+            target = addable[
+                [f"{r['symbol']} — {r['name']}" for r in addable].index(choice)
+            ]
+            db.add_watchlist_item(
+                target["symbol"], "meme", target["name"],
+                target["source_id"], target["pair_created_at"],
+            )
+            flash("success", f"Added {target['symbol']} to the meme watchlist.")
+            refresh_data()
+            st.rerun()
+
+
+# --------------------------------------------------------------------------
 # News
 # --------------------------------------------------------------------------
 
@@ -566,6 +940,11 @@ def render_asset_tab(asset_class: str, label: str, snapshots: dict) -> None:
     st.subheader(f"{label} watchlist")
     render_watchlist(entries, snapshots, asset_class)
     render_watchlist_manager(asset_class, entries)
+    if asset_class == "meme":
+        st.divider()
+        render_trending()
+    st.divider()
+    render_chart_section(asset_class, entries)
     st.divider()
     render_trade_form(asset_class, entries, snapshots)
     st.divider()
@@ -620,6 +999,53 @@ def trades_frame(rows: list[dict]) -> pd.DataFrame:
     )
 
 
+def render_equity_curve(starting_balance: float) -> None:
+    """Drawn from portfolio_snapshots, which the collector appends each cycle.
+
+    Always whole-account: a per-class equity curve would need per-class
+    snapshots, and only the total is recorded.
+    """
+    curve = load_equity_curve()
+    if len(curve) < 2:
+        st.caption(
+            "The equity curve needs at least two snapshots. The collector "
+            f"records one every {config.PORTFOLIO_SNAPSHOT_INTERVAL}s while it runs."
+        )
+        return
+
+    frame = pd.DataFrame(
+        {
+            "t": pd.to_datetime([c["snapshot_at"] for c in curve], utc=True, format="ISO8601"),
+            "total": [c["total_value"] for c in curve],
+            "cash": [c["cash_balance"] for c in curve],
+        }
+    )
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(x=frame["t"], y=frame["total"], mode="lines", name="Total value",
+                   line=dict(width=2))
+    )
+    fig.add_trace(
+        go.Scatter(x=frame["t"], y=frame["cash"], mode="lines", name="Cash",
+                   line=dict(width=1, dash="dot"))
+    )
+    fig.add_hline(
+        y=starting_balance, line_dash="dash", line_color="#888",
+        annotation_text="starting balance", annotation_position="bottom right",
+    )
+    fig.update_layout(
+        height=360,
+        margin=dict(l=10, r=10, t=20, b=10),
+        showlegend=True,
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+    )
+    fig.update_yaxes(tickprefix="$", title=None)
+    fig.update_xaxes(title=None)
+    st.plotly_chart(fig, width="stretch")
+    st.caption("Whole-account value; not split by the asset-class filter.")
+
+
 def render_portfolio_tab(snapshots: dict) -> None:
     st.subheader("Paper portfolio")
 
@@ -666,14 +1092,17 @@ def render_portfolio_tab(snapshots: dict) -> None:
 
     st.markdown("#### Positions")
     if summary["positions"]:
-        st.dataframe(positions_frame(summary["positions"]), width="stretch", hide_index=True)
+        render_table(positions_frame(summary["positions"]))
     else:
         st.caption("No open positions.")
+
+    st.markdown("#### Equity curve")
+    render_equity_curve(summary["starting_balance"])
 
     st.markdown("#### Trade history")
     trades = portfolio.get_trades(asset_class)
     if trades:
-        st.dataframe(trades_frame(trades), width="stretch", hide_index=True)
+        render_table(trades_frame(trades))
     else:
         st.caption("No trades yet.")
 
@@ -694,6 +1123,7 @@ def render_portfolio_tab(snapshots: dict) -> None:
 
 def main() -> None:
     db.init_db()
+    st.markdown(TABLE_CSS, unsafe_allow_html=True)
     snapshots = load_snapshots()
     render_sidebar(snapshots)
 
