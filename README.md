@@ -63,6 +63,11 @@ python -m collector.scheduler
 streamlit run app.py
 ```
 
+Note that Streamlit binds `0.0.0.0` by default, so the dashboard is reachable
+from every device on your network and it has no login. Pass
+`--server.address 127.0.0.1` to keep it on loopback — see the Tailscale section
+for reaching it remotely without exposing it to the LAN.
+
 The collector must be running for prices to update. `python -m
 collector.scheduler --once` runs a single cycle of every job and exits, which is
 the quickest way to confirm your keys work.
@@ -86,6 +91,50 @@ about 0.02s of CPU per minute and 122 MB of RAM — it is network-bound and
 asleep almost all the time. Streamlit uses roughly 2.7% of one core and 170 MB
 while a browser tab is open and auto-refreshing, and close to nothing once the
 tab is closed. Combined that is under 1% of memory.
+
+## Reaching it from your phone (Tailscale)
+
+The dashboard has no authentication of any kind, so it is served over a private
+tailnet rather than the public internet.
+
+After `tailscale up` on this machine and installing Tailscale on the phone under
+the same account, there are two ways to reach it.
+
+**Direct tailnet address** — works immediately, no extra setup:
+
+```bash
+streamlit run app.py
+```
+
+Reachable at `http://<tailnet-ip>:8501` from your own devices. The catch is that
+this relies on Streamlit's default `0.0.0.0` bind, so the dashboard is also open
+to anyone on the same Wi-Fi.
+
+**Via `tailscale serve`** — better, but Serve has to be enabled once for the
+tailnet from the Tailscale admin console:
+
+```bash
+tailscale serve --bg 8501
+```
+
+This gives an HTTPS `https://<machine>.<tailnet>.ts.net/` address and proxies
+from localhost, so Streamlit can be bound to loopback and stop being visible on
+the LAN at all:
+
+```bash
+streamlit run app.py --server.address 127.0.0.1
+```
+
+`tailscale serve status` shows what is exposed; `tailscale serve --https=443 off`
+withdraws it.
+
+Two things worth keeping straight:
+
+- **`tailscale serve` is tailnet-only. `tailscale funnel` is the public
+  internet.** Do not use `funnel` here — it would put an unauthenticated paper
+  portfolio on the open web.
+- The machine has to be awake. A tunnel does not help if the laptop is asleep,
+  and the collector stops with it.
 
 ## Layout
 
