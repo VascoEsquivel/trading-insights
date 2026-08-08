@@ -118,6 +118,29 @@ def fetch_ohlc(coin_id: str, days: int = 7) -> list[list[float]] | None:
     return data if isinstance(data, list) and data else None
 
 
+def fetch_market_chart(coin_id: str, days: int = 90) -> dict | None:
+    """Hourly price and volume series, used by the signal engine.
+
+    /ohlc collapses to 4-day candles past 30 days; market_chart stays hourly
+    even at days=90, so daily closes are resampled from this instead.
+    """
+    try:
+        data = request_json(
+            f"{CG_BASE}/coins/{coin_id}/market_chart",
+            source=SOURCE,
+            params={"vs_currency": "usd", "days": str(days)},
+            headers=_cg_headers(),
+        )
+    except RateLimited:
+        return None
+    except Exception as exc:
+        log.error("coingecko market_chart failed for %s: %s", coin_id, exc)
+        return None
+    if not data or not data.get("prices"):
+        return None
+    return data
+
+
 # --------------------------------------------------------------------------
 # News — keyless RSS, matched to watched symbols
 # --------------------------------------------------------------------------

@@ -111,6 +111,31 @@ Verified against live responses in August 2026:
 - **Not used:** Binance (blocks US IPs) and X/Twitter (pay-per-use only since
   Feb 2026, no free tier).
 
+## The signal desk
+
+Each asset tab has a **Signal desk** that does the part that actually takes
+work: it sizes today's move against the symbol's own recent behaviour, then
+looks for what corroborates or undercuts it.
+
+For the selected symbol it computes the move as a multiple of the symbol's
+typical daily swing, volume against its 20-period average, distance from the
+20-period average, RSI(14), position in the observed range, and — for meme
+pairs — pool liquidity. It then pulls the headlines from the last 24h, scores
+their tone with VADER, and checks whether coverage points the same way the
+price moved. The result is sorted into **Supporting / Against / Context**, each
+factor carrying the number it came from.
+
+It deliberately produces no buy/sell label. A read like *"up 2.3%, only 0.9x its
+typical swing, volume 0.81x average, 37 headlines at neutral tone"* tells you
+there is probably nothing there — which is a genuinely useful answer, and a
+different one from *"don't buy"*. None of these factors forecasts anything; a
+well-explained move is still just a move that has been explained.
+
+History comes from 6 months of yfinance dailies for stocks, 90 days of hourly
+CoinGecko data resampled to daily closes for coins, and collected
+`price_snapshots` for DexScreener-only tokens (where the read says so and marks
+itself provisional).
+
 ## Using it
 
 Each asset tab has the same shape: watchlist table, add/remove controls, a

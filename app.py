@@ -19,7 +19,7 @@ import config
 from collector import crypto as crypto_source
 from collector import memecoins as meme_source
 from collector import stocks as stock_source
-from trading import db, portfolio
+from trading import db, portfolio, signals
 
 st.set_page_config(
     page_title="Trading Insights",
@@ -260,31 +260,23 @@ def _auto_refresh_tick() -> None:
 # --------------------------------------------------------------------------
 
 
-TABLE_CSS = """
-<style>
-.ti-wrap { overflow-x: auto; margin-bottom: .35rem; }
-.ti-table { border-collapse: collapse; width: 100%; font-size: .875rem;
-            font-variant-numeric: tabular-nums; }
-.ti-table th { text-align: left; font-weight: 600; opacity: .65;
-               padding: .4rem .7rem; border-bottom: 1px solid rgba(128,128,128,.35);
-               white-space: nowrap; }
-.ti-table td { padding: .4rem .7rem;
-               border-bottom: 1px solid rgba(128,128,128,.15); white-space: nowrap; }
-.ti-table tr:last-child td { border-bottom: none; }
-.ti-table td.num, .ti-table th.num { text-align: right; }
-.ti-table td.sym { font-weight: 600; }
-.ti-up { color: #16a34a; }
-.ti-down { color: #dc2626; }
-.ti-pill { display: inline-block; padding: .05rem .4rem; border-radius: .6rem;
-           font-size: .72rem; font-weight: 600; letter-spacing: .02em; }
-.ti-pill.thin { background: rgba(234,179,8,.18); color: #a16207; }
-.ti-pill.new  { background: rgba(59,130,246,.18); color: #1d4ed8; }
-@media (prefers-color-scheme: dark) {
-  .ti-pill.thin { color: #fde047; }
-  .ti-pill.new  { color: #93c5fd; }
-}
-</style>
-"""
+@st.cache_data(show_spinner=False)
+def _read_stylesheet(path: str, mtime: float) -> str:
+    """mtime is part of the cache key so editing the CSS shows up on reload."""
+    del mtime
+    try:
+        return f"<style>{open(path, encoding='utf-8').read()}</style>"
+    except OSError:
+        return ""  # cosmetic only — the app is fully usable unstyled
+
+
+def load_stylesheet() -> str:
+    path = config.BASE_DIR / "assets" / "app.css"
+    try:
+        return _read_stylesheet(str(path), path.stat().st_mtime)
+    except OSError:
+        return ""
+
 
 # Columns whose sign should be coloured, and columns that render as pills.
 SIGNED_COLUMNS = {"24h", "Unrealized", "Unrealized %", "Realized PnL"}
@@ -426,21 +418,39 @@ def render_watchlist(entries: list[dict], snapshots: dict, asset_class: str) -> 
 # Charts
 # --------------------------------------------------------------------------
 
-CANDLE_UP = "#26a69a"
-CANDLE_DOWN = "#ef5350"
+CANDLE_UP = "#34d399"
+CANDLE_DOWN = "#fb7185"
+ACCENT = "#22d3ee"
+ACCENT_ALT = "#a78bfa"
+GRID = "rgba(148,163,184,0.10)"
+MUTED = "#8b98ab"
+
+
+def dark_layout(fig: go.Figure, height: int) -> go.Figure:
+    """Match the charts to the page instead of Plotly's white default card."""
+    fig.update_layout(
+        template="plotly_dark",
+        height=height,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color=MUTED, size=11),
+        hovermode="x unified",
+        hoverlabel=dict(bgcolor="#161f2e", bordercolor="rgba(148,163,184,0.28)"),
+    )
+    fig.update_xaxes(gridcolor=GRID, zeroline=False, title=None, showspikes=False)
+    fig.update_yaxes(gridcolor=GRID, zeroline=False, title=None)
+    return fig
 
 
 def style_chart(fig: go.Figure, title: str) -> go.Figure:
+    dark_layout(fig, 420)
     fig.update_layout(
-        title=title,
-        height=420,
-        margin=dict(l=10, r=10, t=48, b=10),
+        title=dict(text=title, font=dict(size=13, color="#e6edf3"), x=0.01, y=0.97),
+        margin=dict(l=10, r=10, t=44, b=10),
         xaxis_rangeslider_visible=False,
         showlegend=False,
-        hovermode="x unified",
     )
-    fig.update_yaxes(tickformat=".8~g", title=None)
-    fig.update_xaxes(title=None)
+    fig.update_yaxes(tickformat=".8~g")
     return fig
 
 
@@ -512,7 +522,9 @@ def render_snapshot_chart(symbol: str, hours: int) -> None:
         }
     )
     fig = go.Figure(
-        go.Scatter(x=frame["t"], y=frame["price"], mode="lines", line=dict(width=2))
+        go.Scatter(x=frame["t"], y=frame["price"], mode="lines",
+                   line=dict(width=2, color=ACCENT),
+                   fill="tozeroy", fillcolor="rgba(34,211,238,0.07)")
     )
     st.plotly_chart(
         style_chart(fig, f"{symbol} · last {hours}h · collected snapshots"),
@@ -713,7 +725,8 @@ def render_trade_form(asset_class: str, entries: list[dict], snapshots: dict) ->
         return
 
     st.markdown("**Place a paper order**")
-    cols = st.columns([2, 1, 2, 2])
+    # Side needs real width or the radio labels wrap one letter per line.
+    cols = st.columns([2.2, 1.5, 2, 1.8])
     symbol = cols[0].selectbox("Symbol", tradable, key=f"trade_sym_{asset_class}")
     side = cols[1].radio("Side", ["Buy", "Sell"], key=f"trade_side_{asset_class}")
     quantity = cols[2].number_input(
@@ -758,6 +771,126 @@ def render_trade_form(asset_class: str, entries: list[dict], snapshots: dict) ->
             )
         refresh_data()
         st.rerun()
+
+
+# --------------------------------------------------------------------------
+# Signal desk
+# --------------------------------------------------------------------------
+
+
+@st.cache_data(ttl=180, show_spinner=False)
+def load_readout(symbol: str, _entry: dict, _snapshot: dict | None):
+    """Cached because it pulls 6mo of history per symbol.
+
+    The underscore-prefixed args are excluded from the cache key by Streamlit;
+    `symbol` plus the 180s TTL is the key.
+    """
+    return signals.analyze(_entry, _snapshot)
+
+
+STANCE_ICON = {"supportive": "▲", "cautionary": "▼", "neutral": "●"}
+STANCE_CLASS = {"supportive": "ti-up", "cautionary": "ti-down", "neutral": ""}
+
+
+def render_signal_desk(asset_class: str, entries: list[dict], snapshots: dict) -> None:
+    priced = [e for e in entries if e["symbol"] in snapshots]
+    if not priced:
+        return
+
+    st.markdown("#### Signal desk")
+
+    movers = [m for m in signals.scan(asset_class)]
+    if movers:
+        chips = "".join(
+            f"<span class='ti-chip'><b>{html_lib.escape(m['symbol'])}</b> "
+            f"<span class='{'ti-up' if m['change_24h'] >= 0 else 'ti-down'}'>"
+            f"{m['change_24h']:+.2f}%</span></span>"
+            for m in movers[:6]
+        )
+        st.markdown(
+            f"<div class='ti-chips' style='margin-bottom:.7rem'>{chips}</div>",
+            unsafe_allow_html=True,
+        )
+
+    default = movers[0]["symbol"] if movers else priced[0]["symbol"]
+    options = [e["symbol"] for e in priced]
+    symbol = st.selectbox(
+        "Analyse",
+        options,
+        index=options.index(default) if default in options else 0,
+        key=f"signal_sym_{asset_class}",
+        label_visibility="collapsed",
+    )
+    entry = next(e for e in priced if e["symbol"] == symbol)
+
+    with st.spinner("Reading the tape…"):
+        read = load_readout(symbol, entry, snapshots.get(symbol))
+
+    stats = [
+        ("Price", fmt_price(read.price)),
+        ("24h", fmt_pct(read.change_24h)),
+        ("Move vs. typical", f"{abs(read.sigma_move):.1f}x" if read.sigma_move is not None else DASH),
+        ("Volume vs. avg", f"{read.volume_ratio:.2f}x" if read.volume_ratio is not None else DASH),
+        ("vs. 20-period avg", f"{read.ma20_gap:+.1f}%" if read.ma20_gap is not None else DASH),
+        ("RSI(14)", f"{read.rsi14:.0f}" if read.rsi14 is not None else DASH),
+    ]
+    st.markdown(
+        "<div class='ti-statgrid'>"
+        + "".join(
+            f"<div class='ti-stat'><span class='k'>{html_lib.escape(k)}</span>"
+            f"<span class='v'>{html_lib.escape(v)}</span></div>"
+            for k, v in stats
+        )
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+
+    tone = "ti-up" if (read.change_24h or 0) >= 0 else "ti-down"
+    st.markdown(
+        f"<div class='ti-read-headline {tone}'>{html_lib.escape(read.headline)}</div>"
+        f"<div class='ti-read-note'>{html_lib.escape(read.history_note)}</div>",
+        unsafe_allow_html=True,
+    )
+
+    supportive = [f for f in read.factors if f.stance == "supportive"]
+    cautionary = [f for f in read.factors if f.stance == "cautionary"]
+    neutral = [f for f in read.factors if f.stance == "neutral"]
+
+    def factor_block(title: str, items, css: str) -> str:
+        if not items:
+            return (
+                f"<div class='ti-fcol'><div class='ti-fhead {css}'>{title} · 0</div>"
+                "<div class='ti-fempty'>Nothing in this column.</div></div>"
+            )
+        rows = "".join(
+            f"<div class='ti-factor'><span class='ti-fmark {STANCE_CLASS[i.stance]}'>"
+            f"{STANCE_ICON[i.stance]}</span><div><b>{html_lib.escape(i.label)}</b>"
+            f"<div class='ti-fdetail'>{html_lib.escape(i.detail)}</div></div></div>"
+            for i in items
+        )
+        return (
+            f"<div class='ti-fcol'><div class='ti-fhead {css}'>{title} · {len(items)}</div>"
+            f"{rows}</div>"
+        )
+
+    st.markdown(
+        "<div class='ti-fgrid'>"
+        + factor_block("Supporting", supportive, "ti-up")
+        + factor_block("Against", cautionary, "ti-down")
+        + factor_block("Context", neutral, "")
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+
+    if read.news:
+        with st.expander(f"The {len(read.news)} headlines this read used"):
+            st.markdown(news_html(read.news[:12]), unsafe_allow_html=True)
+
+    st.caption(
+        "This weighs up evidence — it is not a recommendation, and none of these "
+        "factors predicts what happens next. A well-explained move is still just "
+        "a move that has been explained."
+    )
 
 
 # --------------------------------------------------------------------------
@@ -836,9 +969,22 @@ def render_trending() -> None:
 # --------------------------------------------------------------------------
 
 
-def link_safe(text: str) -> str:
-    """Make a headline safe to drop inside a markdown link label."""
-    return text.replace("[", "(").replace("]", ")").replace("$", r"\$")
+def news_html(items: list[dict]) -> str:
+    """Headline list. Values are third-party text, so everything is escaped."""
+    rows = []
+    for item in items:
+        url = html_lib.escape(item.get("url") or "", quote=True)
+        rows.append(
+            "<div class='ti-news-item'>"
+            f"<a href='{url}' target='_blank' rel='noopener noreferrer'>"
+            f"{html_lib.escape(item['headline'])}</a>"
+            "<div class='ti-news-meta'>"
+            f"<span class='tag'>{html_lib.escape(item['symbol'])}</span>"
+            f"<span>{html_lib.escape(item.get('source') or '?')}</span>"
+            f"<span>{html_lib.escape(fmt_when(item.get('published_at')))}</span>"
+            "</div></div>"
+        )
+    return f"<div class='ti-news'>{''.join(rows)}</div>"
 
 
 def render_news(entries: list[dict]) -> None:
@@ -866,13 +1012,7 @@ def render_news(entries: list[dict]) -> None:
         )
         return
 
-    lines = [
-        f"- [{link_safe(item['headline'])}]({item['url']})  \n"
-        f"  <sub>{item['symbol']} · {item.get('source') or '?'} · "
-        f"{fmt_when(item.get('published_at'))}</sub>"
-        for item in items[:25]
-    ]
-    st.markdown("\n".join(lines), unsafe_allow_html=True)
+    st.markdown(news_html(items[:20]), unsafe_allow_html=True)
 
 
 # --------------------------------------------------------------------------
@@ -914,12 +1054,16 @@ def render_sentiment(entries: list[dict]) -> None:
             continue
         shown += 1
         st.markdown(
-            md(
-                f"**{entry['symbol']}** — {latest['mention_count']} mentions "
-                f"in the window ending {fmt_when(latest['window_end'])} · "
-                f"{trend_marker(latest['mention_count'], record.get('baseline'))} · "
-                f"{polarity_label(latest.get('sentiment_score'))}"
-            )
+            "<div class='ti-senti'><div class='ti-senti-top'>"
+            f"<span class='ti-senti-sym'>{html_lib.escape(entry['symbol'])}</span>"
+            f"<span class='ti-senti-count'>{latest['mention_count']}</span></div>"
+            "<div class='ti-senti-meta'>"
+            f"{html_lib.escape(trend_marker(latest['mention_count'], record.get('baseline')))}"
+            "</div>"
+            "<div class='ti-senti-meta'>"
+            f"{html_lib.escape(polarity_label(latest.get('sentiment_score')))} · "
+            f"window ended {html_lib.escape(fmt_when(latest['window_end']))}</div></div>",
+            unsafe_allow_html=True,
         )
     if not shown:
         st.caption("No mentions recorded yet in the scanned subreddits.")
@@ -940,6 +1084,8 @@ def render_asset_tab(asset_class: str, label: str, snapshots: dict) -> None:
     st.subheader(f"{label} watchlist")
     render_watchlist(entries, snapshots, asset_class)
     render_watchlist_manager(asset_class, entries)
+    st.divider()
+    render_signal_desk(asset_class, entries, snapshots)
     if asset_class == "meme":
         st.divider()
         render_trending()
@@ -1023,25 +1169,23 @@ def render_equity_curve(starting_balance: float) -> None:
     fig = go.Figure()
     fig.add_trace(
         go.Scatter(x=frame["t"], y=frame["total"], mode="lines", name="Total value",
-                   line=dict(width=2))
+                   line=dict(width=2.2, color=ACCENT))
     )
     fig.add_trace(
         go.Scatter(x=frame["t"], y=frame["cash"], mode="lines", name="Cash",
-                   line=dict(width=1, dash="dot"))
+                   line=dict(width=1.4, dash="dot", color=ACCENT_ALT))
     )
     fig.add_hline(
         y=starting_balance, line_dash="dash", line_color="#888",
         annotation_text="starting balance", annotation_position="bottom right",
     )
+    dark_layout(fig, 360)
     fig.update_layout(
-        height=360,
-        margin=dict(l=10, r=10, t=20, b=10),
+        margin=dict(l=10, r=10, t=26, b=10),
         showlegend=True,
-        hovermode="x unified",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
     )
-    fig.update_yaxes(tickprefix="$", title=None)
-    fig.update_xaxes(title=None)
+    fig.update_yaxes(tickprefix="$")
     st.plotly_chart(fig, width="stretch")
     st.caption("Whole-account value; not split by the asset-class filter.")
 
@@ -1121,17 +1265,48 @@ def render_portfolio_tab(snapshots: dict) -> None:
             st.rerun()
 
 
+def render_hero(snapshots: dict) -> None:
+    newest = newest_snapshot_time(snapshots)
+    when = db.from_iso(newest)
+    if when is None:
+        state, label = "dead", "collector offline"
+    else:
+        age = (datetime.now(timezone.utc) - when).total_seconds()
+        state, label = ("live", f"live · {fmt_when(newest)}") if age <= 300 else (
+            "stale", f"stale · {fmt_when(newest)}"
+        )
+
+    account = portfolio.get_account()
+    prices = {s: v["price"] for s, v in snapshots.items() if v.get("price") is not None}
+    total = account["cash_balance"] + sum(
+        p["quantity"] * prices[p["symbol"]]
+        for p in portfolio.get_positions()
+        if p["symbol"] in prices
+    )
+    pnl = total - account["starting_balance"]
+    pnl_class = "ti-up" if pnl >= 0 else "ti-down"
+
+    st.markdown(
+        "<div class='ti-hero'><div>"
+        "<h1>Trading Insights</h1>"
+        "<div class='ti-sub'>Movement, the news behind it, and what argues both ways — "
+        "assembled for you to judge. Paper trading only; no brokerage is ever linked.</div>"
+        "</div><div class='ti-chips'>"
+        f"<span class='ti-chip'><span class='ti-dot {state}'></span>{label}</span>"
+        f"<span class='ti-chip'>paper value <b>${total:,.2f}</b></span>"
+        f"<span class='ti-chip'>P&amp;L <b class='{pnl_class}'>{'+' if pnl >= 0 else ''}"
+        f"${pnl:,.2f}</b></span>"
+        "</div></div>",
+        unsafe_allow_html=True,
+    )
+
+
 def main() -> None:
     db.init_db()
-    st.markdown(TABLE_CSS, unsafe_allow_html=True)
+    st.markdown(load_stylesheet(), unsafe_allow_html=True)
     snapshots = load_snapshots()
     render_sidebar(snapshots)
-
-    st.title("Trading Insights")
-    st.caption(
-        "Market data, news, and social signal for research and paper practice. "
-        "Numbers are inputs — no recommendations are produced here."
-    )
+    render_hero(snapshots)
 
     drain_flash()
 
