@@ -204,6 +204,52 @@
 .ti-fdetail { font-size: .755rem; color: var(--ti-muted); line-height: 1.45; margin-top: .1rem; }
 .ti-fempty { font-size: .75rem; color: var(--ti-muted); font-style: italic; padding: .3rem 0; }
 
+/* ---------- clickable candidate rows ---------- */
+
+.ti-rowhead {
+  font-size: .64rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .08em; color: var(--ti-muted);
+  padding: .2rem .1rem .35rem; border-bottom: 1px solid var(--ti-border);
+}
+.ti-rowcell {
+  font-size: .82rem; padding: .42rem .1rem; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.ti-rowcell.ti-num {
+  font-family: var(--ti-mono); font-size: .79rem; text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.ti-rowcell.ti-dim { color: var(--ti-muted); }
+
+/* The symbol cell is a real button so a row can be clicked. */
+[class*="st-key-disc_pick_"] button {
+  font-family: var(--ti-mono); font-weight: 700; font-size: .8rem;
+  padding: .2rem .4rem; justify-content: flex-start;
+  background: transparent; border-color: transparent; color: var(--ti-text);
+}
+[class*="st-key-disc_pick_"] button:hover {
+  background: var(--ti-surface-2); border-color: var(--ti-border-lit);
+  color: var(--ti-cyan);
+}
+[class*="st-key-disc_add_"] button {
+  padding: .2rem .3rem; font-size: .9rem; line-height: 1;
+  background: transparent; border-color: transparent; color: var(--ti-muted);
+}
+[class*="st-key-disc_add_"] button:hover {
+  color: var(--ti-cyan); border-color: var(--ti-cyan);
+  background: var(--ti-surface-2);
+}
+
+.ti-thesis {
+  background: linear-gradient(135deg, rgba(34,211,238,.07), rgba(167,139,250,.07));
+  border: 1px solid var(--ti-border); border-left: 3px solid var(--ti-cyan);
+  border-radius: .7rem; padding: .7rem .85rem; margin-bottom: .8rem;
+  font-size: .84rem; line-height: 1.5;
+}
+.ti-thesis-caveat {
+  margin-top: .35rem; font-size: .755rem; color: var(--ti-muted);
+}
+
 /* ---------- news ---------- */
 
 .ti-news { display: flex; flex-direction: column; gap: .1rem; }

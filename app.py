@@ -1180,6 +1180,76 @@ def candidate_table(rows: list[dict], asset_class: str) -> pd.DataFrame:
     return pd.DataFrame(table)
 
 
+MAX_CANDIDATE_ROWS = 20
+
+
+def render_candidate_rows(rows: list[dict], asset_class: str, watched: set[str]) -> None:
+    """Clickable candidate rows.
+
+    Hand-built from st.columns rather than st.dataframe(on_select=...): the
+    native grid is the canvas widget that measures zero width inside a tab
+    hidden on first paint, and Discover is never the first tab.
+    """
+    widths = [1.15, 2.5, 1.15, 0.95, 1.15, 1.0, 0.5]
+    head = st.columns(widths)
+    for col, label in zip(
+        head, ["Symbol", "Name", "Price", "24h", "Volume", "Evidence", ""]
+    ):
+        col.markdown(f"<div class='ti-rowhead'>{label}</div>", unsafe_allow_html=True)
+
+    for index, row in enumerate(rows):
+        cols = st.columns(widths)
+        symbol = row["symbol"]
+
+        if cols[0].button(symbol, key=f"disc_pick_{index}", width="stretch",
+                          help="Show why this is here"):
+            st.session_state["disc_sel"] = symbol
+            st.rerun()
+
+        cols[1].markdown(
+            f"<div class='ti-rowcell ti-dim'>{html_lib.escape((row.get('name') or '')[:38])}</div>",
+            unsafe_allow_html=True,
+        )
+        cols[2].markdown(
+            f"<div class='ti-rowcell ti-num'>{fmt_price(row.get('price'))}</div>",
+            unsafe_allow_html=True,
+        )
+        change = row.get("change_24h")
+        css = "ti-up" if (change or 0) >= 0 else "ti-down"
+        cols[3].markdown(
+            f"<div class='ti-rowcell ti-num {css}'>{fmt_pct(change)}</div>",
+            unsafe_allow_html=True,
+        )
+        volume = (
+            fmt_shares(row.get("volume")) if asset_class == "stock"
+            else fmt_compact(row.get("volume"))
+        )
+        cols[4].markdown(
+            f"<div class='ti-rowcell ti-num'>{volume}</div>", unsafe_allow_html=True
+        )
+        cols[5].markdown(
+            f"<div class='ti-rowcell ti-num'>"
+            f"<span class='ti-up'>+{row['supportive']}</span> / "
+            f"<span class='ti-down'>-{row['cautionary']}</span></div>",
+            unsafe_allow_html=True,
+        )
+
+        if symbol in watched:
+            cols[6].markdown(
+                "<div class='ti-rowcell ti-dim' title='Already on the watchlist'>✓</div>",
+                unsafe_allow_html=True,
+            )
+        elif cols[6].button("＋", key=f"disc_add_{index}", help="Add to watchlist"):
+            db.add_watchlist_item(
+                symbol, asset_class, row.get("name"),
+                row.get("source_id"), row.get("pair_created_at"),
+            )
+            st.session_state["disc_sel"] = symbol
+            flash("success", f"Added {symbol} — the collector picks it up next cycle.")
+            refresh_data()
+            st.rerun()
+
+
 def render_discover_tab() -> None:
     st.subheader("Discover")
     st.caption(
@@ -1237,49 +1307,38 @@ def render_discover_tab() -> None:
         )
         return
 
-    render_table(candidate_table(rows, asset_class))
-    st.caption(
-        md(
-            "**Evidence** counts supporting vs. cautionary factors from the screen "
-            "data alone. Open a candidate below for the full read, which pulls its "
-            "price history and headlines."
-        )
-    )
+    shown = rows[:MAX_CANDIDATE_ROWS]
+    watched = {w["symbol"] for w in load_watchlist(asset_class)}
+    render_candidate_rows(shown, asset_class, watched)
+    if len(rows) > len(shown):
+        st.caption(f"Showing the top {len(shown)} of {len(rows)} candidates by evidence.")
 
-    st.markdown("#### Full read")
-    labels = [f"{r['symbol']} — {(r.get('name') or '')[:38]}" for r in rows]
-    picked = st.selectbox(
-        "Candidate", labels, key="disc_pick", label_visibility="collapsed"
-    )
-    candidate = rows[labels.index(picked)]
-
-    read_col, add_col = st.columns([3, 1])
-    with read_col:
-        run = st.button(f"Analyse {candidate['symbol']}", key="disc_read")
-    with add_col:
-        already = any(
-            w["symbol"] == candidate["symbol"] for w in load_watchlist(asset_class)
-        )
-        if already:
-            st.caption("Already watched.")
-        elif st.button("Add to watchlist", key="disc_add", width="stretch"):
-            db.add_watchlist_item(
-                candidate["symbol"], asset_class, candidate.get("name"),
-                candidate.get("source_id"), candidate.get("pair_created_at"),
-            )
-            flash("success", f"Added {candidate['symbol']} — the collector picks it up next cycle.")
-            refresh_data()
-            st.rerun()
-
-    if run:
-        st.session_state["disc_read_for"] = candidate["symbol"]
-    if st.session_state.get("disc_read_for") != candidate["symbol"]:
-        st.caption("Pick a candidate and hit Analyse for the full evidence read.")
+    selected = st.session_state.get("disc_sel")
+    candidate = next((r for r in shown if r["symbol"] == selected), None)
+    if candidate is None:
+        st.info("Click a **symbol** for the full read, or **+** to add it straight to the watchlist.")
         return
+
+    st.divider()
+    st.markdown(f"#### {candidate['symbol']} · why it's here")
+
+    screen_key = discovery.STOCK_SCREENS[screen_label] if source == "Stocks" else None
+    if screen_key:
+        info = discovery.SCREEN_INFO.get(screen_key, {})
+        if info:
+            st.markdown(
+                f"<div class='ti-thesis'><b>{html_lib.escape(screen_label)}</b> — "
+                f"{html_lib.escape(info['thesis'])}"
+                f"<div class='ti-thesis-caveat'>{html_lib.escape(info['caveat'])}</div>"
+                "</div>",
+                unsafe_allow_html=True,
+            )
+        render_factor_grid(signals.category_factors(candidate, screen_key))
 
     with st.spinner(f"Pulling history and headlines for {candidate['symbol']}…"):
         read = deep_read(candidate["symbol"], candidate)
 
+    st.markdown("#### How it's trading right now")
     tone = "ti-up" if (read.change_24h or 0) >= 0 else "ti-down"
     st.markdown(
         f"<div class='ti-read-headline {tone}'>{html_lib.escape(read.headline)}</div>"

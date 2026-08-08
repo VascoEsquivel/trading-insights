@@ -35,6 +35,59 @@ STOCK_SCREENS: dict[str, str] = {
     "Day losers": "day_losers",
 }
 
+# What each screen is actually selecting for, so a candidate's presence can be
+# explained rather than asserted. Yahoo does not publish exact thresholds, so
+# these describe the intent; the per-stock numbers are what the UI leans on.
+#   kind — which family of evidence the explainer should emphasise.
+SCREEN_INFO: dict[str, dict[str, str]] = {
+    "day_gainers": {
+        "kind": "momentum",
+        "thesis": "The largest intraday risers on US exchanges, filtered for real "
+                  "volume so it isn't just penny-stock noise.",
+        "caveat": "A name qualifies here because it has already moved. That is the "
+                  "entry risk, not the case for buying it.",
+    },
+    "day_losers": {
+        "kind": "momentum",
+        "thesis": "The largest intraday fallers, same volume filtering.",
+        "caveat": "Falling is not the same as cheap. Something caused this, and the "
+                  "screen does not know what.",
+    },
+    "most_actives": {
+        "kind": "momentum",
+        "thesis": "Heaviest share volume of the session, regardless of direction.",
+        "caveat": "Volume means attention, not opportunity — and the largest, most "
+                  "efficiently priced names dominate this list.",
+    },
+    "small_cap_gainers": {
+        "kind": "momentum",
+        "thesis": "Risers under roughly $2bn of market cap.",
+        "caveat": "Small caps move further on less money, in both directions.",
+    },
+    "growth_technology_stocks": {
+        "kind": "growth",
+        "thesis": "Technology names Yahoo scores as growing earnings and revenue "
+                  "quickly — selected on business trajectory, not today's move.",
+        "caveat": "Growth is priced in advance, so these usually are not cheap. "
+                  "The question is whether the growth justifies the multiple.",
+    },
+    "undervalued_growth_stocks": {
+        "kind": "value",
+        "thesis": "A low earnings multiple combined with earnings that are still "
+                  "growing — cheap relative to profits, without the growth having "
+                  "stalled.",
+        "caveat": "A low multiple is often low for a reason. The screen cannot tell "
+                  "a bargain from a business in trouble.",
+    },
+    "aggressive_small_caps": {
+        "kind": "growth",
+        "thesis": "Smaller companies with fast earnings growth — high variance by "
+                  "construction.",
+        "caveat": "The same traits that produce the upside here produce the "
+                  "drawdowns.",
+    },
+}
+
 
 def _ratio(numerator: Any, denominator: Any) -> float | None:
     try:
@@ -42,6 +95,16 @@ def _ratio(numerator: Any, denominator: Any) -> float | None:
             return None
         return float(numerator) / float(denominator)
     except (TypeError, ValueError, ZeroDivisionError):
+        return None
+
+
+def _analyst_score(rating: Any) -> float | None:
+    """Yahoo returns "1.3 - Strong Buy"; keep the number, drop the verdict."""
+    if rating is None:
+        return None
+    try:
+        return float(str(rating).split("-")[0].strip())
+    except (ValueError, IndexError):
         return None
 
 
@@ -83,6 +146,20 @@ def screen_stocks(screen: str = "day_gainers", count: int = 25) -> list[dict[str
                 "vs_50d": q.get("fiftyDayAverageChangePercent"),
                 "range_position": range_position,
                 "exchange": q.get("fullExchangeName"),
+                # Valuation set, used to explain why a stock sits in its screen.
+                # trailingPE is absent whenever trailing EPS is negative.
+                "trailing_pe": q.get("trailingPE"),
+                "forward_pe": q.get("forwardPE"),
+                "price_to_book": q.get("priceToBook"),
+                "eps_ttm": q.get("epsTrailingTwelveMonths"),
+                "eps_forward": q.get("epsForward"),
+                "eps_current_year": q.get("epsCurrentYear"),
+                "change_52w": q.get("fiftyTwoWeekChangePercent"),
+                "dividend_yield": q.get("dividendYield"),
+                # "1.3 - Strong Buy" -> 1.3. The words are dropped deliberately:
+                # this app never renders a buy/sell label.
+                "analyst_score": _analyst_score(q.get("averageAnalystRating")),
+                "screen": screen,
             }
         )
     log.info("discovery: %d stock candidates from %s", len(out), screen)

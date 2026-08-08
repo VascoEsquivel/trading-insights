@@ -67,8 +67,25 @@ The collector must be running for prices to update. `python -m
 collector.scheduler --once` runs a single cycle of every job and exits, which is
 the quickest way to confirm your keys work.
 
-Don't leave the collector running 24/7 — the CoinGecko Demo tier caps at 10,000
-calls **per month**, and that cap, not the per-minute limit, is what binds.
+### Running it continuously
+
+`CRYPTO_PRICE_INTERVAL` is set to 300s specifically so the collector *can* stay
+up. The CoinGecko Demo tier caps at 10,000 calls **per month** and that cap, not
+the per-minute limit, is what binds:
+
+| Interval | Calls/day | Calls/month | Fits? |
+|---|---|---|---|
+| 180s | 480 | 14,400 | no — dies around day 20 |
+| 300s | 288 | 8,640 | yes, with headroom for chart views |
+
+Chart and signal-desk reads draw on the same quota, so treat 300s as a floor
+rather than a target.
+
+Measured footprint while running (32-core, 32 GB machine): the collector uses
+about 0.02s of CPU per minute and 122 MB of RAM — it is network-bound and
+asleep almost all the time. Streamlit uses roughly 2.7% of one core and 170 MB
+while a browser tab is open and auto-refreshing, and close to nothing once the
+tab is closed. Combined that is under 1% of memory.
 
 ## Layout
 

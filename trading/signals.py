@@ -505,6 +505,225 @@ def screen_factors(candidate: dict[str, Any]) -> list[Factor]:
     return factors
 
 
+# Below this trailing EPS, a growth percentage is denominator noise rather than
+# information: $0.04 -> $2.23 prints as "+5465% growth", which is true and
+# useless. Cases under the floor are described in dollars instead.
+MIN_EPS_BASE = 0.10
+
+
+def implied_eps_growth(candidate: dict[str, Any]) -> float | None:
+    """Forward EPS against trailing, as a percentage.
+
+    Yahoo's screener payload carries no revenueGrowth or earningsGrowth field,
+    so this stands in for "are earnings still growing". Returns None when
+    trailing EPS is negative (the sign flips and the ratio stops meaning
+    growth) or too near zero to divide by — see MIN_EPS_BASE.
+    """
+    forward = candidate.get("eps_forward")
+    trailing = candidate.get("eps_ttm")
+    if forward is None or trailing is None or trailing < MIN_EPS_BASE:
+        return None
+    return (forward - trailing) / trailing * 100
+
+
+def _eps_base_factor(candidate: dict[str, Any]) -> Factor | None:
+    """Describe an unusable growth base in dollars rather than a huge percent."""
+    trailing = candidate.get("eps_ttm")
+    forward = candidate.get("eps_forward")
+    if trailing is None or trailing >= MIN_EPS_BASE:
+        return None
+    if trailing <= 0:
+        return Factor(
+            "Earnings base",
+            f"Trailing EPS is ${trailing:.2f} — the company is not profitable, so "
+            "any growth rate is a forecast rather than a trend."
+            + (f" Forward estimate is ${forward:.2f}." if forward is not None else ""),
+            "cautionary",
+        )
+    return Factor(
+        "Earnings base",
+        f"Trailing EPS is only ${trailing:.2f}"
+        + (f", against a ${forward:.2f} forward estimate" if forward is not None else "")
+        + " — a percentage growth rate off a base this small is arithmetic, not a "
+        "trend, so it is left out.",
+        "cautionary",
+    )
+
+
+def category_factors(candidate: dict[str, Any], screen_key: str) -> list[Factor]:
+    """Why this stock sits in this screen, in the screen's own terms.
+
+    A momentum screen is explained with move and participation; a value screen
+    with multiples; a growth screen with the earnings trajectory. Every factor
+    carries the figure it came from so the classification can be argued with.
+    """
+    from collector.discovery import SCREEN_INFO
+
+    info = SCREEN_INFO.get(screen_key, {})
+    kind = info.get("kind", "momentum")
+    factors: list[Factor] = []
+
+    trailing_pe = candidate.get("trailing_pe")
+    forward_pe = candidate.get("forward_pe")
+    book = candidate.get("price_to_book")
+    growth = implied_eps_growth(candidate)
+    change_52w = candidate.get("change_52w")
+
+    if kind == "value":
+        if trailing_pe is not None:
+            if trailing_pe <= 20:
+                factors.append(Factor(
+                    "Earnings multiple",
+                    f"Trailing P/E of {trailing_pe:.1f} — this is the number that put "
+                    "it on a value screen; under ~20 is the usual cutoff.",
+                    "supportive",
+                ))
+            else:
+                factors.append(Factor(
+                    "Earnings multiple",
+                    f"Trailing P/E of {trailing_pe:.1f} — higher than a value screen "
+                    "normally admits, so it likely qualified on the forward figure.",
+                    "neutral",
+                ))
+        else:
+            factors.append(Factor(
+                "Earnings multiple",
+                "No trailing P/E, which means trailing earnings are negative — "
+                "'cheap' here rests entirely on forecasts.",
+                "cautionary",
+            ))
+        if forward_pe is not None and trailing_pe is not None:
+            if forward_pe < trailing_pe:
+                factors.append(Factor(
+                    "Forward multiple",
+                    f"Forward P/E {forward_pe:.1f} vs. trailing {trailing_pe:.1f} — "
+                    "it gets cheaper on next year's earnings, which is the whole "
+                    "premise of the screen.",
+                    "supportive",
+                ))
+            else:
+                factors.append(Factor(
+                    "Forward multiple",
+                    f"Forward P/E {forward_pe:.1f} is above trailing "
+                    f"{trailing_pe:.1f} — earnings are expected to fall, so the low "
+                    "multiple is not the bargain it looks like.",
+                    "cautionary",
+                ))
+        if book is not None:
+            stance = "supportive" if book <= 3 else ("neutral" if book <= 8 else "cautionary")
+            factors.append(Factor(
+                "Price to book",
+                f"{book:.2f}x book value"
+                + (" — backed by real assets." if book <= 3 else
+                   " — priced well above its balance sheet." if book > 8 else "."),
+                stance,
+            ))
+
+    elif kind == "growth":
+        if growth is not None:
+            if growth >= 25:
+                factors.append(Factor(
+                    "Earnings growth",
+                    f"Forward EPS is {growth:+.0f}% above trailing — the trajectory "
+                    "that earns it a place on a growth screen.",
+                    "supportive",
+                ))
+            elif growth > 0:
+                factors.append(Factor(
+                    "Earnings growth",
+                    f"Forward EPS is {growth:+.0f}% above trailing — growing, but "
+                    "modestly for this category.",
+                    "neutral",
+                ))
+            else:
+                factors.append(Factor(
+                    "Earnings growth",
+                    f"Forward EPS is {growth:+.0f}% versus trailing — earnings are "
+                    "expected to shrink, which sits oddly on a growth screen.",
+                    "cautionary",
+                ))
+        else:
+            base = _eps_base_factor(candidate)
+            if base:
+                factors.append(base)
+        if forward_pe is not None:
+            stance = "cautionary" if forward_pe > 40 else "neutral"
+            factors.append(Factor(
+                "What you pay for it",
+                f"Forward P/E of {forward_pe:.1f}"
+                + (" — the growth is already priced in aggressively."
+                   if forward_pe > 40 else "."),
+                stance,
+            ))
+
+    else:  # momentum screens
+        change = candidate.get("change_24h")
+        if change is not None:
+            factors.append(Factor(
+                "Why it's listed",
+                f"{change:+.2f}% on the session — the move itself is the only "
+                "reason this screen picked it up.",
+                "neutral",
+            ))
+        ratio = candidate.get("volume_ratio")
+        if ratio is not None and ratio >= 1.25:
+            factors.append(Factor(
+                "Participation",
+                f"{ratio:.2f}x its 3-month average volume — the move has real "
+                "money behind it, not a thin print.",
+                "supportive",
+            ))
+        if forward_pe is not None:
+            factors.append(Factor(
+                "What you pay for it",
+                f"Forward P/E of {forward_pe:.1f} — the screen ignored valuation "
+                "entirely, so this is worth knowing.",
+                "cautionary" if forward_pe > 40 else "neutral",
+            ))
+        if growth is not None:
+            factors.append(Factor(
+                "Earnings trajectory",
+                f"Forward EPS {growth:+.0f}% vs. trailing — again, not something "
+                "a momentum screen checks.",
+                "supportive" if growth >= 15 else "neutral",
+            ))
+        else:
+            base = _eps_base_factor(candidate)
+            if base:
+                factors.append(base)
+
+    if change_52w is not None:
+        if change_52w > 100:
+            factors.append(Factor(
+                "Past year",
+                f"{change_52w:+.0f}% over 12 months — a large amount of the story "
+                "may already be in the price.",
+                "cautionary",
+            ))
+        elif change_52w < -30:
+            factors.append(Factor(
+                "Past year",
+                f"{change_52w:+.0f}% over 12 months — down heavily, which is either "
+                "the opportunity or the warning.",
+                "neutral",
+            ))
+        else:
+            factors.append(Factor(
+                "Past year", f"{change_52w:+.0f}% over 12 months.", "neutral"
+            ))
+
+    score = candidate.get("analyst_score")
+    if score is not None:
+        factors.append(Factor(
+            "Analyst consensus",
+            f"{score:.1f} on Yahoo's 1–5 scale, where 1 is the most positive. "
+            "Other people's opinion, not evidence about the business.",
+            "neutral",
+        ))
+
+    return factors
+
+
 def rank_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Attach screen factors and order by net evidence, then by move size."""
     scored = []

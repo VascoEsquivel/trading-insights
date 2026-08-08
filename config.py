@@ -34,15 +34,22 @@ ENABLE_REDDIT = _flag("ENABLE_REDDIT")
 # --------------------------------------------------------------------------
 # Collector cadences, in seconds
 # --------------------------------------------------------------------------
-COLLECTOR_TICK = 5  # loop granularity; each job runs when its interval elapses
+# Loop granularity. The shortest job interval is 60s, so a 15s tick still fires
+# jobs within 15s of due. Kept coarse deliberately: on a laptop the cost of an
+# idle loop is timer wakeups, not CPU, and 5s meant 12 wakeups a minute for
+# nothing.
+COLLECTOR_TICK = 15
 
 STOCK_QUOTE_INTERVAL = 60  # Finnhub /quote, one REST call per symbol
 STOCK_VOLUME_INTERVAL = 900  # yfinance batch — /quote carries no volume field
 STOCK_NEWS_INTERVAL = 900  # Finnhub /company-news, one call per symbol
 
-# CoinGecko Demo allows ~100 calls/min but only 10k calls/month — the month cap
-# is the binding constraint, so poll the whole watchlist as ONE batched call.
-CRYPTO_PRICE_INTERVAL = 180
+# CoinGecko Demo allows ~100 calls/min but only 10,000 calls/MONTH, and the
+# month cap is what actually binds. Left running continuously:
+#     180s -> 480 calls/day -> 14,400/month, over the cap around day 20
+#     300s -> 288 calls/day ->  8,640/month, fits with room for chart views
+# Chart and signal-desk reads draw on the same quota, so 300 is a floor.
+CRYPTO_PRICE_INTERVAL = 300
 CRYPTO_NEWS_INTERVAL = 900  # keyless RSS, not CoinGecko
 
 MEME_PAIR_INTERVAL = 90  # DexScreener, batched per chain
