@@ -8,6 +8,7 @@ would duplicate or orphan them.
 from __future__ import annotations
 
 import html as html_lib
+import logging
 import time
 from datetime import datetime, timezone
 
@@ -976,11 +977,31 @@ def render_trending() -> None:
 # --------------------------------------------------------------------------
 
 
-def news_html(items: list[dict]) -> str:
+def tone_label(score: float | None) -> tuple[str, str]:
+    """(text, css class) for a VADER compound score. Descriptive, not a call."""
+    if score is None:
+        return ("", "")
+    if score >= 0.35:
+        return (f"{score:+.2f} positive", "ti-up")
+    if score >= 0.05:
+        return (f"{score:+.2f} mildly positive", "ti-up")
+    if score <= -0.35:
+        return (f"{score:+.2f} negative", "ti-down")
+    if score <= -0.05:
+        return (f"{score:+.2f} mildly negative", "ti-down")
+    return (f"{score:+.2f} neutral", "")
+
+
+def news_html(items: list[dict], show_tone: bool = False) -> str:
     """Headline list. Values are third-party text, so everything is escaped."""
     rows = []
     for item in items:
         url = html_lib.escape(item.get("url") or "", quote=True)
+        extra = ""
+        if show_tone:
+            text, css = tone_label(item.get("tone"))
+            if text:
+                extra = f"<span class='{css}'>{html_lib.escape(text)}</span>"
         rows.append(
             "<div class='ti-news-item'>"
             f"<a href='{url}' target='_blank' rel='noopener noreferrer'>"
@@ -989,6 +1010,7 @@ def news_html(items: list[dict]) -> str:
             f"<span class='tag'>{html_lib.escape(item['symbol'])}</span>"
             f"<span>{html_lib.escape(item.get('source') or '?')}</span>"
             f"<span>{html_lib.escape(fmt_when(item.get('published_at')))}</span>"
+            f"{extra}"
             "</div></div>"
         )
     return f"<div class='ti-news'>{''.join(rows)}</div>"
@@ -1417,6 +1439,142 @@ def render_setup_cards(setups: list[dict]) -> None:
         )
 
 
+HOT_NEWS_TICKERS = 8
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def load_hot_news(tickers: tuple[str, ...]) -> dict:
+    """Headlines for off-watchlist movers, fetched on demand and tone-scored.
+
+    These tickers are not on the watchlist, so the collector has never pulled
+    anything for them — the fetch happens here. Rows land in news_items like any
+    other and get pruned on the normal schedule. One Finnhub call per ticker,
+    cached for 15 minutes.
+    """
+    if not tickers:
+        return {"items": [], "summary": []}
+    try:
+        stock_source.fetch_news(days_back=3, symbols=list(tickers))
+    except Exception as exc:  # a news outage must not take the tab down
+        logging.getLogger("app").error("hot news fetch failed: %s", exc)
+
+    items = db.get_news(list(tickers), limit=len(tickers) * 10)
+
+    try:
+        from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+
+        analyzer = SentimentIntensityAnalyzer()
+        for item in items:
+            item["tone"] = analyzer.polarity_scores(item["headline"])["compound"]
+    except Exception:
+        for item in items:
+            item["tone"] = None
+
+    grouped: dict[str, list[dict]] = {}
+    for item in items:
+        grouped.setdefault(item["symbol"], []).append(item)
+
+    summary = []
+    for ticker in tickers:
+        bucket = grouped.get(ticker, [])
+        scores = [b["tone"] for b in bucket if b.get("tone") is not None]
+        summary.append(
+            {
+                "ticker": ticker,
+                "count": len(bucket),
+                "tone": sum(scores) / len(scores) if scores else None,
+            }
+        )
+    return {"items": items, "summary": summary}
+
+
+def render_hot_news(rows: list[dict]) -> None:
+    """Trending headlines for the top-ranked matches.
+
+    Separate from the per-tab watchlist feed, which stays scoped to symbols you
+    actually track. This one covers names you have no context on yet, which is
+    the whole reason they need reading rather than just scoring.
+    """
+    tickers = tuple(r["ticker"] for r in rows[:HOT_NEWS_TICKERS])
+    if not tickers:
+        return
+
+    st.divider()
+    st.markdown("#### Trending news on these names")
+
+    load_col, note_col = st.columns([1, 3])
+    if load_col.button("Load headlines", key="hot_news_load", width="stretch"):
+        st.session_state["hot_news_on"] = True
+        load_hot_news.clear()
+    note_col.caption(
+        f"Pulls company news for the top {len(tickers)} matches above — "
+        f"{', '.join(tickers)}. One request per ticker, cached 15 minutes."
+    )
+    if not st.session_state.get("hot_news_on"):
+        return
+
+    with st.spinner("Fetching headlines…"):
+        data = load_hot_news(tickers)
+
+    if not data["items"]:
+        st.caption(
+            "No headlines came back for these tickers. Finnhub's company-news "
+            "coverage thins out for smaller names."
+        )
+        return
+
+    chips = []
+    for entry in sorted(data["summary"], key=lambda s: -s["count"]):
+        if not entry["count"]:
+            continue
+        text, css = tone_label(entry["tone"])
+        chips.append(
+            f"<span class='ti-chip'><b>{html_lib.escape(entry['ticker'])}</b> "
+            f"{entry['count']} <span class='{css}'>{html_lib.escape(text)}</span></span>"
+        )
+    if chips:
+        st.markdown(
+            f"<div class='ti-chips' style='margin-bottom:.7rem'>{''.join(chips)}</div>",
+            unsafe_allow_html=True,
+        )
+
+    picked = st.multiselect(
+        "Filter",
+        list(tickers),
+        default=list(tickers),
+        key="hot_news_filter",
+        label_visibility="collapsed",
+    )
+    items = [i for i in data["items"] if i["symbol"] in picked]
+
+    # news_items is unique on (symbol, url), so a market-wide story legitimately
+    # exists once per ticker it mentions. Correct in the table, but in a merged
+    # feed it reads as a duplicate — collapse to one row carrying every tag.
+    merged: dict[str, dict] = {}
+    for item in items:
+        existing = merged.get(item["url"])
+        if existing:
+            if item["symbol"] not in existing["symbols"]:
+                existing["symbols"].append(item["symbol"])
+        else:
+            merged[item["url"]] = {**item, "symbols": [item["symbol"]]}
+
+    feed = sorted(
+        merged.values(), key=lambda i: i.get("published_at") or "", reverse=True
+    )
+    for item in feed:
+        item["symbol"] = " · ".join(sorted(item["symbols"]))
+
+    if not feed:
+        st.caption("Nothing selected.")
+        return
+    st.markdown(news_html(feed[:30], show_tone=True), unsafe_allow_html=True)
+    st.caption(
+        "Tone is a VADER score of the headline text — a description of wording, "
+        "not a judgement about the company."
+    )
+
+
 def render_recommended_tab() -> None:
     st.subheader("Recommended")
     stats = load_pattern_stats()
@@ -1553,6 +1711,8 @@ backtest of a strategy, and none of it is advice.
             flash("success", f"Added {ticker} to the stock watchlist.")
             refresh_data()
             st.rerun()
+
+    render_hot_news(rows)
 
     selected = st.session_state.get("rec_sel")
     chosen = next((r for r in rows if r["ticker"] == selected), None)

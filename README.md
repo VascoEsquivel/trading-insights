@@ -252,6 +252,24 @@ next to the headline number. Six-month momentum is the only condition with both
 a strong upside lift and the best typical outcome — which is roughly what the
 momentum literature would predict.
 
+### Trending news on the matches
+
+Below the ranked list, **Load headlines** pulls company news for the top matches
+— names that are not on your watchlist, so the collector has never fetched
+anything for them. It shows a per-ticker chip row (headline count and average
+tone), a filter, and a merged chronological feed with each headline's VADER
+tone.
+
+This is separate from, and does not replace, the per-tab news feed, which stays
+scoped to symbols you actually track. The two answer different questions: what
+is happening to things you hold, versus what the story is behind a name you have
+never looked at.
+
+One wrinkle worth knowing: `news_items` is unique on `(symbol, url)`, so a
+market-wide story genuinely exists once per ticker it mentions. That is correct
+in the table but reads as a duplicate in a merged feed, so the feed collapses by
+URL and shows every ticker it touched as a combined tag (`ABNB · TWLO`).
+
 ### Biases, stated rather than corrected
 
 - **Survivorship.** yfinance serves only tickers that still trade, so companies
