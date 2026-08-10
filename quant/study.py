@@ -295,8 +295,53 @@ def run(years: int = 12, tickers: list[str] | None = None) -> list[dict]:
 
     rows.sort(key=lambda r: r["adjusted_lift"], reverse=True)
     db.save_pattern_stats(rows)
+    save_stack_stats(panel, rows)
     log.info("stored %d conditions to pattern_stats", len(rows))
     return rows
+
+
+def save_stack_stats(panel: pd.DataFrame, rows: list[dict]) -> None:
+    """Does matching several credible setups at once actually beat matching one?
+
+    The live ranking leads on how many credible setups agree, which is an
+    assumption worth testing rather than trusting. It holds — adjusted lift
+    climbs monotonically — but the raw hit rate climbs far faster than the
+    adjusted one, meaning most of the apparent gain from stacking is the same
+    volatility effect, and the drop rate rises with it.
+    """
+    credible = [
+        r["condition_key"] for r in rows
+        if (r.get("adjusted_lift") or 0) >= 1.10 and (r.get("oos_lift") or 0) >= 1.10
+    ]
+    if not credible:
+        return
+    masks = [features.CONDITIONS[k][2](panel).fillna(False) for k in credible]
+    matched = sum(m.astype(int) for m in masks)
+
+    out = []
+    for count in range(0, len(credible) + 1):
+        subset = panel[matched == count]
+        if len(subset) < 50:
+            continue
+        expected = stratified_expected_rate(panel, subset)
+        out.append(
+            {
+                "n_matched": count,
+                "n": int(len(subset)),
+                "hit_rate": float(subset["boom"].mean()),
+                "adjusted_lift": float(subset["boom"].mean() / expected) if expected else 0.0,
+                "median_fwd_return": float(subset["fwd_return"].median()),
+                "bust_rate": float(subset["bust"].mean()),
+                "computed_at": db.iso_now(),
+            }
+        )
+        log.info(
+            "stack %d setups: n=%-8s hit=%5.2f%%  vol-adj=%.2fx  median=%+.1f%%  drop=%5.2f%%",
+            count, f"{out[-1]['n']:,}", out[-1]["hit_rate"] * 100,
+            out[-1]["adjusted_lift"], out[-1]["median_fwd_return"] * 100,
+            out[-1]["bust_rate"] * 100,
+        )
+    db.save_stack_stats(out)
 
 
 def main() -> int:

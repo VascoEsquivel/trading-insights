@@ -1383,6 +1383,11 @@ def load_pattern_stats():
     return db.get_pattern_stats()
 
 
+@st.cache_data(ttl=600, show_spinner=False)
+def load_stack_stats():
+    return db.get_stack_stats()
+
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def load_regime():
     return quant_live.current_regime()
@@ -1691,6 +1696,39 @@ backtest of a strategy, and none of it is advice.
             "actually work (Stage-2 breakout, 0.99x raw)."
         )
     )
+
+    stacks = load_stack_stats()
+    if stacks:
+        with st.expander("Does matching several setups at once actually help?"):
+            st.markdown(
+                "The ranking below leads on how many credible setups agree, which "
+                "is an assumption worth testing rather than trusting. It holds — "
+                "but read the last two columns together."
+            )
+            render_table(
+                pd.DataFrame(
+                    [
+                        {
+                            "Setups matched": s["n_matched"],
+                            "Occurrences": f"{s['n']:,}",
+                            "Big up-move": pct(s["hit_rate"]),
+                            "Vol-adj": f"{s['adjusted_lift']:.2f}x",
+                            "Typical": signed_pct(s["median_fwd_return"]),
+                            "Big drop": pct(s["bust_rate"]),
+                        }
+                        for s in stacks
+                    ]
+                )
+            )
+            st.caption(
+                "Adjusted lift climbs monotonically (0.95x → 1.26x → 1.32x → "
+                "1.34x), so corroboration is real and the ordering is justified. "
+                "But the raw hit rate climbs far faster than the adjusted one, "
+                "which means most of the apparent jump at three setups is the "
+                "same volatility effect — and the drop rate goes with it, from "
+                "about 10% to 17%. Three setups agreeing is a higher-variance "
+                "state, not a free upgrade."
+            )
 
     st.divider()
     st.markdown("#### What matches right now")

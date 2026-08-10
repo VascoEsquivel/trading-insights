@@ -439,6 +439,44 @@ def save_pattern_stats(rows: Iterable[dict[str, Any]]) -> int:
     return len(rows)
 
 
+STACK_STATS_DDL = """
+CREATE TABLE IF NOT EXISTS stack_stats (
+    n_matched         INTEGER PRIMARY KEY,
+    n                 INTEGER NOT NULL,
+    hit_rate          REAL NOT NULL,
+    adjusted_lift     REAL NOT NULL,
+    median_fwd_return REAL,
+    bust_rate         REAL,
+    computed_at       TEXT NOT NULL
+)
+"""
+
+
+def save_stack_stats(rows: Iterable[dict[str, Any]]) -> int:
+    rows = list(rows)
+    if not rows:
+        return 0
+    with connect() as conn:
+        conn.execute("DROP TABLE IF EXISTS stack_stats")
+        conn.execute(STACK_STATS_DDL)
+        conn.executemany(
+            "INSERT INTO stack_stats (n_matched,n,hit_rate,adjusted_lift,"
+            "median_fwd_return,bust_rate,computed_at) VALUES (:n_matched,:n,"
+            ":hit_rate,:adjusted_lift,:median_fwd_return,:bust_rate,:computed_at)",
+            rows,
+        )
+    return len(rows)
+
+
+def get_stack_stats() -> list[dict[str, Any]]:
+    with connect(readonly=True) as conn:
+        try:
+            return [dict(r) for r in conn.execute(
+                "SELECT * FROM stack_stats ORDER BY n_matched")]
+        except sqlite3.OperationalError:
+            return []
+
+
 def get_pattern_stats() -> dict[str, dict[str, Any]]:
     """condition_key -> stats row. Empty until `python -m quant.study` runs."""
     with connect(readonly=True) as conn:
