@@ -327,6 +327,11 @@ def render_table(frame: pd.DataFrame) -> None:
         cells = []
         for column in frame.columns:
             raw = "" if row[column] is None else str(row[column])
+            # Sparklines are SVG we build ourselves from numeric series, never
+            # from third-party text, so they pass through unescaped.
+            if column == "Trend":
+                cells.append(f"<td class='spark'>{raw}</td>")
+                continue
             text = html_lib.escape(raw)
             if column in SIGNED_COLUMNS:
                 text = _signed_cell(text)
@@ -347,6 +352,73 @@ def render_table(frame: pd.DataFrame) -> None:
     )
 
 
+@st.cache_data(ttl=900, show_spinner=False)
+def load_stock_sparklines(symbols: tuple[str, ...]) -> dict[str, list[float]]:
+    """30 days of closes for every watched stock, in one batched call."""
+    if not symbols:
+        return {}
+    try:
+        import yfinance as yf
+
+        data = yf.download(
+            tickers=" ".join(symbols), period="1mo", interval="1d",
+            group_by="ticker", auto_adjust=True, progress=False, threads=True,
+        )
+    except Exception as exc:
+        logging.getLogger("app").error("sparkline download failed: %s", exc)
+        return {}
+
+    out: dict[str, list[float]] = {}
+    for symbol in symbols:
+        try:
+            series = (data[symbol]["Close"] if len(symbols) > 1 else data["Close"]).dropna()
+            if len(series) >= 3:
+                out[symbol] = [float(x) for x in series.to_numpy()]
+        except Exception:
+            continue
+    return out
+
+
+@st.cache_data(ttl=TTL)
+def load_snapshot_sparklines(symbols: tuple[str, ...], hours: int = 48) -> dict[str, list[float]]:
+    """Sparklines for coins, drawn from collected snapshots.
+
+    Free: no CoinGecko call, which matters against a 10k/month cap. Shorter and
+    coarser than the stock version, and empty until the collector has run for a
+    while — for DexScreener tokens it is the only history that exists.
+    """
+    out: dict[str, list[float]] = {}
+    for symbol in symbols:
+        points = [
+            row["price"] for row in db.snapshot_history(symbol, hours)
+            if row.get("price") is not None
+        ]
+        if len(points) >= 3:
+            out[symbol] = points[-60:]
+    return out
+
+
+def sparkline_svg(values: list[float], width: int = 84, height: int = 22) -> str:
+    """Inline SVG polyline. Coloured by net direction over the window."""
+    if not values or len(values) < 3:
+        return f"<span class='ti-dim'>{DASH}</span>"
+    low, high = min(values), max(values)
+    span = (high - low) or 1.0
+    step = width / (len(values) - 1)
+    points = " ".join(
+        f"{i * step:.1f},{height - 2 - ((v - low) / span) * (height - 4):.1f}"
+        for i, v in enumerate(values)
+    )
+    rising = values[-1] >= values[0]
+    colour = "#34d399" if rising else "#fb7185"
+    return (
+        f"<svg class='ti-spark' viewBox='0 0 {width} {height}' width='{width}' "
+        f"height='{height}' preserveAspectRatio='none' aria-hidden='true'>"
+        f"<polyline points='{points}' fill='none' stroke='{colour}' "
+        "stroke-width='1.5' stroke-linejoin='round' stroke-linecap='round'/></svg>"
+    )
+
+
 def risk_flags(entry: dict, snap: dict) -> str:
     """"thin" under $50k liquidity, "new" under 24h old.
 
@@ -363,7 +435,11 @@ def risk_flags(entry: dict, snap: dict) -> str:
     return " · ".join(flags) if flags else DASH
 
 
-def build_table(entries: list[dict], snapshots: dict, asset_class: str) -> pd.DataFrame:
+def build_table(
+    entries: list[dict], snapshots: dict, asset_class: str,
+    sparks: dict[str, list[float]] | None = None,
+) -> pd.DataFrame:
+    sparks = sparks or {}
     rows = []
     for entry in entries:
         symbol = entry["symbol"]
@@ -373,6 +449,7 @@ def build_table(entries: list[dict], snapshots: dict, asset_class: str) -> pd.Da
             "Name": entry.get("name") or DASH,
             "Price": fmt_price(snap.get("price")),
             "24h": fmt_pct(snap.get("pct_change_24h")),
+            "Trend": sparkline_svg(sparks.get(symbol, [])),
             "Volume 24h": (
                 fmt_shares(snap.get("volume")) if asset_class == "stock"
                 else fmt_compact(snap.get("volume"))
@@ -393,8 +470,14 @@ def render_watchlist(entries: list[dict], snapshots: dict, asset_class: str) -> 
     if not entries:
         st.info("Nothing on this watchlist yet — add a symbol below.")
         return
-    table = build_table(entries, snapshots, asset_class)
-    render_table(table)
+    symbols = tuple(e["symbol"] for e in entries)
+    if asset_class == "stock":
+        sparks = load_stock_sparklines(symbols)
+        window = "30 days"
+    else:
+        sparks = load_snapshot_sparklines(symbols)
+        window = "collected snapshots"
+    render_table(build_table(entries, snapshots, asset_class, sparks))
 
     if asset_class == "meme":
         st.caption(

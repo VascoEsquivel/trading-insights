@@ -147,6 +147,9 @@
 .ti-table td.num, .ti-table th.num { text-align: right; }
 .ti-table td.num { font-family: var(--ti-mono); font-size: .82rem; }
 .ti-table td.sym { font-weight: 700; letter-spacing: -.01em; }
+.ti-table td.spark { padding: .3rem .85rem; width: 1%; }
+.ti-spark { display: block; opacity: .9; }
+.ti-table tbody tr:hover .ti-spark { opacity: 1; }
 .ti-table td.name { color: var(--ti-muted); }
 
 .ti-up   { color: var(--ti-up); }
