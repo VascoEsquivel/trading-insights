@@ -857,6 +857,75 @@ def load_readout(symbol: str, _entry: dict, _snapshot: dict | None):
     return signals.analyze(_entry, _snapshot)
 
 
+@st.cache_data(ttl=900, show_spinner=False)
+def load_symbol_setups(symbol: str) -> list[str]:
+    """Which measured setups this watchlist symbol matches right now.
+
+    The signal desk's own factors use thresholds I chose; these come from the
+    historical study. Showing both keeps one notion of "interesting" across the
+    app instead of two, and this is the half with base rates attached.
+    """
+    try:
+        import yfinance as yf
+
+        hist = yf.Ticker(symbol).history(period="2y", interval="1d")
+        if hist is None or hist.empty:
+            return []
+        return quant_live.evaluate(hist)
+    except Exception as exc:
+        logging.getLogger("app").error("setup match failed for %s: %s", symbol, exc)
+        return []
+
+
+def render_measured_setups(symbol: str, asset_class: str) -> None:
+    """Measured-setup matches for one symbol, with their historical record."""
+    if asset_class != "stock":
+        return
+    stats = load_pattern_stats()
+    if not stats:
+        return
+
+    matched = load_symbol_setups(symbol)
+    known = [stats[k] for k in matched if k in stats]
+    regime = load_regime()
+    bull = regime.get("bull") if regime.get("known") else None
+
+    def regime_lift(s: dict) -> float | None:
+        if bull is None:
+            return s.get("adjusted_lift")
+        return s.get("bull_lift" if bull else "bear_lift") or s.get("adjusted_lift")
+
+    st.markdown("#### Measured setups")
+    if not known:
+        st.caption(
+            f"{symbol} matches none of the study's setups today. That is the "
+            "common case — most stocks match nothing on most days."
+        )
+        return
+
+    chips = []
+    for s in known:
+        lift = regime_lift(s)
+        css = "ti-up" if (lift or 0) >= 1.10 else ("ti-down" if (lift or 1) < 0.95 else "")
+        chips.append(
+            f"<span class='ti-chip'><b>{html_lib.escape(s['label'])}</b> "
+            f"<span class='{css}'>{f'{lift:.2f}x' if lift else DASH}</span></span>"
+        )
+    st.markdown(
+        f"<div class='ti-chips' style='margin-bottom:.6rem'>{''.join(chips)}</div>",
+        unsafe_allow_html=True,
+    )
+    with st.expander(f"What each of these has historically done ({len(known)})"):
+        render_setup_cards(known)
+    st.caption(
+        md(
+            "Lift shown is for today's market regime, against stocks of similar "
+            "volatility. These are frequencies from the study, not a forecast for "
+            f"{symbol}."
+        )
+    )
+
+
 STANCE_ICON = {"supportive": "▲", "cautionary": "▼", "neutral": "●"}
 STANCE_CLASS = {"supportive": "ti-up", "cautionary": "ti-down", "neutral": ""}
 
@@ -951,6 +1020,8 @@ def render_signal_desk(asset_class: str, entries: list[dict], snapshots: dict) -
     if read.news:
         with st.expander(f"The {len(read.news)} headlines this read used"):
             st.markdown(news_html(read.news[:12]), unsafe_allow_html=True)
+
+    render_measured_setups(symbol, asset_class)
 
     st.caption(
         "This weighs up evidence — it is not a recommendation, and none of these "
@@ -1619,6 +1690,20 @@ def render_recommended_tab() -> None:
         return
 
     sample = next(iter(stats.values()))
+
+    # The study only runs when invoked by hand, so it can silently go stale.
+    computed = db.from_iso(sample.get("computed_at"))
+    if computed is not None:
+        age_days = (datetime.now(timezone.utc) - computed).days
+        if age_days >= 30:
+            st.warning(
+                f"These base rates were computed {age_days} days ago and no "
+                "longer include recent market history. Re-run "
+                "`python -m quant.study` to refresh them."
+            )
+        else:
+            st.caption(f"Study last computed {fmt_when(sample['computed_at'])}.")
+
     st.caption(
         f"Every setup below was measured over {sample['universe_size']} tickers: "
         f"how often it was actually followed by a "
