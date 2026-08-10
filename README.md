@@ -92,6 +92,27 @@ asleep almost all the time. Streamlit uses roughly 2.7% of one core and 170 MB
 while a browser tab is open and auto-refreshing, and close to nothing once the
 tab is closed. Combined that is under 1% of memory.
 
+## Tests
+
+```bash
+python -m tests.test_portfolio
+```
+
+17 tests over the paper engine — stdlib `unittest`, since pytest isn't
+installed here. They run against a throwaway database and never touch
+`data/trading.db`.
+
+The coverage is aimed at the money math specifically, because that is where a
+silent bug costs you trust in every number on the dashboard, and two real ones
+already shipped this build: positions with no snapshot were valued at zero
+(making a buy at the live price look like an instant total loss of the amount
+spent), and the equity curve dropped those positions entirely so it stepped down
+the moment a trade filled. Both are pinned by named regression tests.
+
+Those two were checked by mutation: reintroducing the original bug fails the
+tests, restoring the fix passes them. A regression test that cannot fail is
+decoration.
+
 ## Reaching it from your phone (Tailscale)
 
 The dashboard has no authentication of any kind, so it is served over a private
