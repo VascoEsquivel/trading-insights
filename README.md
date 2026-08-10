@@ -226,7 +226,20 @@ distinction matters more than it sounds: valuing them at zero made a
 just-executed buy look like an instant total loss of the amount spent. The
 Portfolio tab flags any line it can't price.
 
-The Portfolio tab is where you see how you're doing — cash, total value,
+The Portfolio tab has a **Performance** section answering the question the
+equity curve cannot: it compares your return against simply buying and holding
+SPY over the same period. A portfolio up 4% is only good news if the index did
+less.
+
+Alongside it, closed-trade statistics — win rate, average win against average
+loss, and profit factor (gross profit over gross loss). Those two together are
+the point: a run of 67% wins with a profit factor of 0.97 is a *losing* record,
+because the one loser was bigger than both winners. Win rate on its own hides
+that. Open positions are excluded deliberately — an unrealised loss you are
+still holding is not yet a losing trade, and counting it would let the numbers
+be improved by refusing to sell.
+
+The Portfolio tab is also where you see how you're doing — cash, total value,
 realized and unrealized PnL, every position marked to market, the full trade
 log, and an equity curve the collector extends each cycle. There's an
 asset-class filter, and a reset if you want to start over.

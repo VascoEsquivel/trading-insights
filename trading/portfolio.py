@@ -305,6 +305,47 @@ def record_portfolio_snapshot(prices: dict[str, float] | None = None) -> dict[st
             "snapshot_at": snapshot_at}
 
 
+def trade_stats(asset_class: str | None = None) -> dict[str, Any]:
+    """Performance of closed round-trips only.
+
+    Open positions are excluded on purpose: an unrealised loss you are still
+    holding is not yet a losing trade, and counting it as one would let the
+    numbers be improved simply by refusing to sell.
+    """
+    closed = [
+        t for t in get_trades(asset_class)
+        if t["side"] == "sell" and t["realized_pnl"] is not None
+    ]
+    if not closed:
+        return {"closed": 0}
+
+    wins = [t for t in closed if t["realized_pnl"] > 0]
+    losses = [t for t in closed if t["realized_pnl"] < 0]
+    gross_win = sum(t["realized_pnl"] for t in wins)
+    gross_loss = -sum(t["realized_pnl"] for t in losses)
+
+    return {
+        "closed": len(closed),
+        "wins": len(wins),
+        "losses": len(losses),
+        "win_rate": len(wins) / len(closed),
+        "avg_win": gross_win / len(wins) if wins else None,
+        "avg_loss": gross_loss / len(losses) if losses else None,
+        # Gross profit over gross loss. Above 1 means the winners paid for the
+        # losers; it survives a low win rate in a way win rate alone does not.
+        "profit_factor": (gross_win / gross_loss) if gross_loss else None,
+        "best": max(closed, key=lambda t: t["realized_pnl"]),
+        "worst": min(closed, key=lambda t: t["realized_pnl"]),
+        "net_realized": gross_win - gross_loss,
+        "first_trade_at": min(t["executed_at"] for t in get_trades(asset_class)),
+    }
+
+
+def first_trade_time() -> str | None:
+    trades = get_trades()
+    return min((t["executed_at"] for t in trades), default=None)
+
+
 def reset_account() -> None:
     """Wipe positions/trades/equity curve and restore the starting balance."""
     with db.connect() as conn:

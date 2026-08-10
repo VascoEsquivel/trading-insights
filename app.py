@@ -1969,6 +1969,109 @@ def trades_frame(rows: list[dict]) -> pd.DataFrame:
     )
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def load_benchmark(start_iso: str) -> dict | None:
+    """What buying and holding SPY instead would have returned since then.
+
+    The honest comparison for any stock picking. A portfolio up 4% is only good
+    news if the index did less, and the equity curve alone never says so.
+    """
+    start = db.from_iso(start_iso)
+    if start is None:
+        return None
+    try:
+        import yfinance as yf
+
+        hist = yf.Ticker("SPY").history(start=start.date(), interval="1d")
+        if hist is None or len(hist) < 2:
+            return None
+        close = hist["Close"].astype("float64")
+        return {
+            "return_pct": float(close.iloc[-1] / close.iloc[0] - 1.0) * 100,
+            "days": int((hist.index[-1] - hist.index[0]).days),
+        }
+    except Exception as exc:
+        logging.getLogger("app").error("benchmark fetch failed: %s", exc)
+        return None
+
+
+def render_performance(summary: dict, asset_class: str | None) -> None:
+    """Closed-trade record, and whether it beat simply owning the index."""
+    stats = portfolio.trade_stats(asset_class)
+    started = portfolio.first_trade_time()
+    if not started:
+        return
+
+    st.markdown("#### Performance")
+
+    account = portfolio.get_account()
+    total_return = (
+        (summary["total_value"] - account["starting_balance"])
+        / account["starting_balance"] * 100
+        if asset_class is None and account["starting_balance"] else None
+    )
+    benchmark = load_benchmark(started)
+
+    if total_return is not None and benchmark and benchmark["days"] >= 1:
+        delta = total_return - benchmark["return_pct"]
+        verdict = "ahead of" if delta >= 0 else "behind"
+        cols = st.columns(3)
+        cols[0].metric("Your return", f"{total_return:+.2f}%")
+        cols[1].metric("SPY buy-and-hold", f"{benchmark['return_pct']:+.2f}%")
+        cols[2].metric("Difference", f"{delta:+.2f}%",
+                       help="Your paper account against simply owning the index "
+                            "over the same period.")
+        st.caption(
+            md(
+                f"Over {benchmark['days']} days you are **{verdict}** buying and "
+                "holding SPY. Over a short window this is mostly noise — it takes "
+                "a lot of trades before a difference means anything about skill."
+            )
+        )
+    elif total_return is not None:
+        st.caption(
+            md(
+                f"Your return is **{total_return:+.2f}%**. The SPY comparison "
+                "needs at least a day of history since your first trade — it "
+                "appears here from tomorrow."
+            )
+        )
+
+    if stats["closed"] == 0:
+        st.caption(
+            "No closed trades yet. Win rate and profit factor need round-trips — "
+            "sell something and they appear here."
+        )
+        return
+
+    cols = st.columns(4)
+    cols[0].metric("Closed trades", f"{stats['closed']}")
+    cols[1].metric("Win rate", f"{stats['win_rate'] * 100:.0f}%",
+                   help=f"{stats['wins']} up, {stats['losses']} down")
+    cols[2].metric(
+        "Avg win / avg loss",
+        f"${stats['avg_win']:,.0f} / ${stats['avg_loss']:,.0f}"
+        if stats["avg_win"] and stats["avg_loss"]
+        else (f"${stats['avg_win']:,.0f} / —" if stats["avg_win"] else "— / —"),
+    )
+    cols[3].metric(
+        "Profit factor",
+        f"{stats['profit_factor']:.2f}" if stats["profit_factor"] else "∞",
+        help="Gross profit over gross loss. Above 1 means the winners paid for "
+             "the losers.",
+    )
+    best, worst = stats["best"], stats["worst"]
+    st.caption(
+        md(
+            f"Best closed trade {best['symbol']} "
+            f"**${best['realized_pnl']:+,.2f}** · worst {worst['symbol']} "
+            f"**${worst['realized_pnl']:+,.2f}** · net realized "
+            f"**${stats['net_realized']:+,.2f}**. A high win rate with a profit "
+            "factor near 1 means the losers are as big as the winners."
+        )
+    )
+
+
 def render_equity_curve(starting_balance: float) -> None:
     """Drawn from portfolio_snapshots, which the collector appends each cycle.
 
@@ -2063,6 +2166,8 @@ def render_portfolio_tab(snapshots: dict) -> None:
         render_table(positions_frame(summary["positions"]))
     else:
         st.caption("No open positions.")
+
+    render_performance(summary, asset_class)
 
     st.markdown("#### Equity curve")
     render_equity_curve(summary["starting_balance"])
