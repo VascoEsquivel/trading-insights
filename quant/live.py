@@ -112,6 +112,9 @@ def rank(results: list[dict[str, Any]], stats: dict[str, dict]) -> list[dict[str
     chance of a big move and still a negative typical result, which is exactly
     what separates an edge from a lottery ticket.
     """
+    def credible(s: dict) -> bool:
+        return (s.get("adjusted_lift") or 0) >= 1.10 and (s.get("oos_lift") or 0) >= 1.10
+
     ranked = []
     for row in results:
         matched = [stats[k] for k in row["matched"] if k in stats]
@@ -119,35 +122,29 @@ def rank(results: list[dict[str, Any]], stats: dict[str, dict]) -> list[dict[str
             continue
         weight = sum(m["n"] for m in matched) or 1
         typical = sum(m["median_fwd_return"] * m["n"] for m in matched) / weight
+        good = [m for m in matched if credible(m)]
         ranked.append(
             {
                 **row,
-                "setups": [
-                    {
-                        "key": k,
-                        "label": stats[k]["label"],
-                        "description": stats[k]["description"],
-                        "hit_rate": stats[k]["hit_rate"],
-                        "base_rate": stats[k]["base_rate"],
-                        "bust_rate": stats[k]["bust_rate"],
-                        "base_bust_rate": stats[k]["base_bust_rate"],
-                        "median_fwd_return": stats[k]["median_fwd_return"],
-                        "lift": stats[k]["lift"],
-                        "n": stats[k]["n"],
-                    }
-                    for k in row["matched"]
-                    if k in stats
-                ],
+                "setups": [dict(stats[k]) for k in row["matched"] if k in stats],
                 "n_setups": len(matched),
+                "n_credible": len(good),
                 "typical": typical,
                 "best_upside": max(m["hit_rate"] for m in matched),
                 "worst_downside": max(m["bust_rate"] for m in matched),
                 "best_lift": max(m["lift"] for m in matched),
+                "best_adjusted": max((m.get("adjusted_lift") or 0) for m in matched),
             }
         )
 
+    # Credible setups lead: those are the ones that beat similar-risk stocks AND
+    # held up on data the thresholds were never tuned against. Matching three
+    # setups that are all volatility artefacts is worth less than matching one
+    # that survives both tests.
     ranked.sort(
-        key=lambda r: (r["n_setups"], r["typical"], r.get("ret_6m") or -9),
+        key=lambda r: (
+            r["n_credible"], r["best_adjusted"], r["typical"], r.get("ret_6m") or -9
+        ),
         reverse=True,
     )
     return ranked

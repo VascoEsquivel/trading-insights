@@ -391,6 +391,14 @@ CREATE TABLE IF NOT EXISTS pattern_stats (
     base_rate         REAL NOT NULL,
     lift              REAL NOT NULL,
     median_fwd_return REAL,
+    p25_fwd_return    REAL,
+    p75_fwd_return    REAL,
+    expected_rate     REAL,
+    adjusted_lift     REAL,
+    train_rate        REAL,
+    test_rate         REAL,
+    test_n            INTEGER,
+    oos_lift          REAL,
     bust_rate         REAL,
     base_bust_rate    REAL,
     ci_low            REAL,
@@ -404,7 +412,9 @@ CREATE TABLE IF NOT EXISTS pattern_stats (
 
 PATTERN_STATS_COLUMNS = [
     "condition_key", "label", "description", "n", "hits", "hit_rate",
-    "base_rate", "lift", "median_fwd_return", "bust_rate", "base_bust_rate",
+    "base_rate", "lift", "median_fwd_return", "p25_fwd_return",
+    "p75_fwd_return", "expected_rate", "adjusted_lift", "train_rate",
+    "test_rate", "test_n", "oos_lift", "bust_rate", "base_bust_rate",
     "ci_low", "ci_high", "universe_size", "horizon_days", "threshold",
     "computed_at",
 ]

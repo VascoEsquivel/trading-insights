@@ -1397,6 +1397,14 @@ def signed_pct(value: float | None, digits: int = 1) -> str:
     return DASH if value is None else f"{value * 100:+.{digits}f}%"
 
 
+def is_credible(s: dict) -> bool:
+    """Survives the volatility adjustment and holds up out of sample."""
+    return (
+        (s.get("adjusted_lift") or 0) >= 1.10
+        and (s.get("oos_lift") or 0) >= 1.10
+    )
+
+
 def stats_table(stats: dict) -> pd.DataFrame:
     return pd.DataFrame(
         [
@@ -1404,26 +1412,43 @@ def stats_table(stats: dict) -> pd.DataFrame:
                 "Setup": s["label"],
                 "Occurrences": f"{s['n']:,}",
                 "Big up-move": pct(s["hit_rate"]),
-                "vs base": f"{s['lift']:.2f}x",
+                "Raw lift": f"{s['lift']:.2f}x",
+                "Vol-adj": f"{s['adjusted_lift']:.2f}x" if s.get("adjusted_lift") else DASH,
+                "Out-of-sample": f"{s['oos_lift']:.2f}x" if s.get("oos_lift") else DASH,
                 "Big drop": pct(s["bust_rate"]),
                 "Typical": signed_pct(s["median_fwd_return"]),
+                "Holds up": "yes" if is_credible(s) else "no",
             }
-            for s in sorted(stats.values(), key=lambda r: -r["median_fwd_return"])
+            for s in sorted(
+                stats.values(), key=lambda r: -(r.get("adjusted_lift") or 0)
+            )
         ]
     )
 
 
 def render_setup_cards(setups: list[dict]) -> None:
     for s in setups:
-        lift_class = "ti-up" if s["lift"] >= 1.15 else ("ti-down" if s["lift"] < 0.9 else "")
+        adjusted = s.get("adjusted_lift")
+        oos = s.get("oos_lift")
+        adj_class = "ti-up" if (adjusted or 0) >= 1.10 else ("ti-down" if (adjusted or 1) < 0.95 else "")
+        oos_class = "ti-up" if (oos or 0) >= 1.10 else ("ti-down" if (oos or 1) < 0.95 else "")
         risk_class = "ti-down" if s["bust_rate"] > s["base_bust_rate"] * 1.3 else ""
+        badge = (
+            "<span class='ti-pill new'>holds up</span>" if is_credible(s)
+            else "<span class='ti-pill thin'>doesn't hold</span>"
+        )
         st.markdown(
             "<div class='ti-setup'>"
-            f"<div class='ti-setup-head'><span class='ti-setup-name'>{html_lib.escape(s['label'])}</span>"
+            "<div class='ti-setup-head'>"
+            f"<span class='ti-setup-name'>{html_lib.escape(s['label'])} {badge}</span>"
             f"<span class='ti-setup-n'>n={s['n']:,}</span></div>"
             f"<div class='ti-setup-desc'>{html_lib.escape(s['description'])}</div>"
             "<div class='ti-setup-stats'>"
-            f"<span>big up-move <b class='{lift_class}'>{pct(s['hit_rate'])}</b>"
+            f"<span>vs similar-risk stocks <b class='{adj_class}'>"
+            f"{f'{adjusted:.2f}x' if adjusted else DASH}</b></span>"
+            f"<span>out-of-sample <b class='{oos_class}'>"
+            f"{f'{oos:.2f}x' if oos else DASH}</b></span>"
+            f"<span>big up-move <b>{pct(s['hit_rate'])}</b>"
             f" <i>vs {pct(s['base_rate'])} base</i></span>"
             f"<span>big drop <b class='{risk_class}'>{pct(s['bust_rate'])}</b>"
             f" <i>vs {pct(s['base_bust_rate'])} base</i></span>"
@@ -1591,28 +1616,43 @@ def render_recommended_tab() -> None:
         "historical frequencies, not forecasts."
     )
 
-    with st.expander("What this does and does not measure — read once"):
+    with st.expander("How to read this — the three lift columns differ, and that matters"):
         st.markdown(
             f"""
 **Measured, not asserted.** {sample['universe_size']} tickers, ~12 years of
-daily bars, every trading day scored. A setup's number is the share of times it
-was followed by a big move — nothing more.
+daily bars, every trading day scored.
 
-**Both tails, deliberately.** A fixed +{sample['threshold'] * 100:.0f}% threshold
-is partly a volatility bet: cheap, violent stocks clear any fixed percentage more
-often whichever way they are going. That is why the drop rate and the *typical*
-(median) outcome sit next to the headline number. "Recovering from a collapse"
-has one of the highest big-up-move rates in the table **and** a negative typical
-outcome — a lottery ticket, not an edge. The control condition, a broken
-downtrend, also scores above baseline for exactly this reason.
+**Raw lift is misleading, and the table proves it.** A fixed
++{sample['threshold'] * 100:.0f}% threshold is partly a volatility bet: cheap,
+violent stocks clear any fixed percentage more often whichever way they are
+heading. A control condition — below the 200-day and falling — was included
+expecting it to underperform, and on raw lift it *beat* the baseline.
+
+**Vol-adjusted** fixes that. Each setup is compared against stocks in the same
+trailing-volatility decile instead of against the whole universe. The control
+drops to 0.88x, where it belongs. Two reversals came out of it:
+
+- *Recovering from a collapse* falls from 2.19x to **0.74x** — its entire
+  apparent edge was volatility. Its median outcome is negative and its drop
+  rate is triple the baseline.
+- *Stage-2 breakout* and *New 52-week high* rise from 0.99x and 0.79x to
+  **1.29x** and **1.21x**. Raw lift made two of the better setups look useless,
+  because they select calm stocks that clear a fixed percentage less often.
+
+**Out-of-sample** is the honesty check. Base rates are computed on the first 60%
+of the date range and re-measured on the last 40%, with a 90-day purge between
+so no outcome straddles the split. A setup that only works in-sample was fitted,
+not found.
+
+**Holds up = yes** means both above 1.10x. Three conditions clear it.
 
 **Biases that remain, uncorrected:**
 
-- *Survivorship.* Yahoo only serves tickers that still trade. Companies that
-  went to zero are missing, so every rate here reads high.
+- *Survivorship.* Yahoo only serves tickers that still trade, so companies that
+  went to zero are missing and every rate reads high.
 - *Overlapping windows.* Consecutive days are near-duplicates, so the true
-  independent sample is far smaller than the occurrence count suggests.
-- *Multiple testing.* Ten conditions were tried. Some of the spread is chance.
+  independent sample is far smaller than n and the intervals are too tight.
+- *Multiple testing.* Ten conditions were tried; some spread is chance.
 - *Regime.* The window is dominated by a long bull market.
 
 **No position sizing, costs, slippage, or exit rule is modelled.** This is not a
@@ -1624,9 +1664,10 @@ backtest of a strategy, and none of it is advice.
     render_table(stats_table(stats))
     st.caption(
         md(
-            "Sorted by typical outcome, not by hit rate — the hit-rate column "
-            "alone rewards volatility. **Typical** is the median forward return; "
-            "**big up-move** and **big drop** are the two tails."
+            "Sorted by **vol-adj**, the only column that compares a setup against "
+            "stocks of similar risk. Raw lift ranks a volatility artefact "
+            "(Recovering from a collapse, 2.19x raw) above two setups that "
+            "actually work (Stage-2 breakout, 0.99x raw)."
         )
     )
 
@@ -1651,9 +1692,11 @@ backtest of a strategy, and none of it is advice.
         return
 
     st.caption(
-        f"{len(rows)} tickers match at least one setup. Ordered by how many "
-        "distinct setups agree, then by typical outcome — one setup firing is "
-        "common, several agreeing at once is not."
+        md(f"{len(rows)} tickers match at least one setup. **Holds up** counts how "
+        "many of those survived both the volatility adjustment and the "
+        "out-of-sample check — that is what the ordering leads on, because "
+        "matching three setups that are all volatility artefacts is worth less "
+        "than matching one that holds.")
     )
 
     watched = {w["symbol"] for w in load_watchlist("stock")}
@@ -1661,7 +1704,7 @@ backtest of a strategy, and none of it is advice.
     head = st.columns(widths)
     for col, label in zip(
         head,
-        ["Ticker", "Setups", "Typical", "Big up", "Big drop", "6m", "Matched", ""],
+        ["Ticker", "Holds up", "Typical", "Big up", "Big drop", "6m", "Matched", ""],
     ):
         col.markdown(f"<div class='ti-rowhead'>{label}</div>", unsafe_allow_html=True)
 
@@ -1674,7 +1717,8 @@ backtest of a strategy, and none of it is advice.
             st.rerun()
 
         cells = [
-            (str(row["n_setups"]), ""),
+            (f"{row.get('n_credible', 0)}/{row['n_setups']}",
+             "ti-up" if row.get("n_credible") else "ti-dim"),
             (signed_pct(row["typical"]), "ti-up" if row["typical"] > 0 else "ti-down"),
             (pct(row["best_upside"]), ""),
             (pct(row["worst_downside"]),

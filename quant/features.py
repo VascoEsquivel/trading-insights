@@ -65,6 +65,9 @@ def build(frame: pd.DataFrame) -> pd.DataFrame:
     vol_20 = daily.rolling(20).std()
     vol_100 = daily.rolling(100).std()
     out["vol_20"] = vol_20
+    # Kept as its own column: the study buckets on it to compare a setup
+    # against similar-risk stocks rather than the whole universe.
+    out["vol_100"] = vol_100
     # Below 1 means recent range is tighter than the longer baseline — the
     # volatility contraction that tends to precede an expansion.
     out["vol_squeeze"] = vol_20 / vol_100

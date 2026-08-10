@@ -66,6 +66,66 @@ def wilson(hits: int, n: int, z: float = 1.96) -> tuple[float, float]:
     return (max(0.0, centre - margin), min(1.0, centre + margin))
 
 
+VOL_BUCKETS = 10
+# Fraction of the date range used as the in-sample period; the rest is held out.
+TRAIN_FRACTION = 0.60
+
+
+def add_vol_buckets(panel: pd.DataFrame) -> pd.DataFrame:
+    """Rank every row into a trailing-volatility decile.
+
+    This is the correction for the flaw the control condition exposed: a fixed
+    +40% threshold is partly a volatility bet, so any setup that happens to
+    select violent stocks scores above the global baseline without carrying
+    information. Bucketing lets a setup be compared against stocks of similar
+    volatility instead of against everything.
+
+    Boundaries come from the whole sample, so this is a normalisation rather
+    than something a live signal could consume — it is only ever used to build
+    the comparison rate, never inside a condition.
+    """
+    panel = panel.copy()
+    try:
+        panel["vol_bucket"] = pd.qcut(
+            panel["vol_100"], VOL_BUCKETS, labels=False, duplicates="drop"
+        )
+    except ValueError:  # not enough distinct values
+        panel["vol_bucket"] = 0
+    return panel
+
+
+def stratified_expected_rate(
+    panel: pd.DataFrame, subset: pd.DataFrame, column: str = "boom"
+) -> float:
+    """The rate this setup would post from its volatility mix alone.
+
+    Weighted average of each bucket's own base rate, weighted by how many of
+    the setup's occurrences fell in that bucket. Dividing the observed rate by
+    this gives lift over similar-risk stocks rather than over the universe.
+    """
+    bucket_rates = panel.groupby("vol_bucket")[column].mean()
+    weights = subset["vol_bucket"].value_counts(normalize=True)
+    shared = bucket_rates.index.intersection(weights.index)
+    if len(shared) == 0:
+        return float(panel[column].mean())
+    expected = float((bucket_rates.loc[shared] * weights.loc[shared]).sum())
+    coverage = float(weights.loc[shared].sum())
+    return expected / coverage if coverage else float(panel[column].mean())
+
+
+def split_dates(panel: pd.DataFrame) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """Train/test boundary, with a purge gap so outcomes don't straddle it.
+
+    A row's label looks HORIZON days forward, so rows immediately before the
+    boundary resolve inside the test period. Those are dropped rather than
+    counted in either half.
+    """
+    dates = panel.index.unique().sort_values()
+    boundary = dates[int(len(dates) * TRAIN_FRACTION)]
+    purge_until = boundary - pd.Timedelta(days=int(features.HORIZON * 1.5))
+    return purge_until, boundary
+
+
 def build_panel(tickers: list[str], years: int) -> pd.DataFrame:
     raw = download(tickers, years)
     frames = []
@@ -103,6 +163,16 @@ def run(years: int = 12, tickers: list[str] | None = None) -> list[dict]:
         f"{len(panel):,}", panel["ticker"].nunique(), time.time() - started,
     )
 
+    panel = add_vol_buckets(panel)
+    purge_until, boundary = split_dates(panel)
+    train = panel[panel.index <= purge_until]
+    test = panel[panel.index > boundary]
+    log.info(
+        "split: train <= %s (%s rows), test > %s (%s rows), %d-day purge between",
+        purge_until.date(), f"{len(train):,}", boundary.date(), f"{len(test):,}",
+        int(features.HORIZON * 1.5),
+    )
+
     base_rate = float(panel["boom"].mean())
     base_bust_rate = float(panel["bust"].mean())
     log.info(
@@ -123,6 +193,24 @@ def run(years: int = 12, tickers: list[str] | None = None) -> list[dict]:
         hits = int(subset["boom"].sum())
         hit_rate = hits / n
         low, high = wilson(hits, n)
+
+        # Lift against stocks of similar volatility, not against the universe.
+        expected = stratified_expected_rate(panel, subset)
+        adjusted_lift = hit_rate / expected if expected else 0.0
+
+        # Does it survive on data the thresholds were not eyeballed against?
+        train_mask = predicate(train).fillna(False)
+        test_mask = predicate(test).fillna(False)
+        train_subset, test_subset = train[train_mask], test[test_mask]
+        train_rate = float(train_subset["boom"].mean()) if len(train_subset) else None
+        test_rate = float(test_subset["boom"].mean()) if len(test_subset) else None
+        test_expected = (
+            stratified_expected_rate(test, test_subset) if len(test_subset) else None
+        )
+        oos_lift = (
+            test_rate / test_expected if test_rate is not None and test_expected else None
+        )
+
         rows.append(
             {
                 "condition_key": key,
@@ -133,7 +221,15 @@ def run(years: int = 12, tickers: list[str] | None = None) -> list[dict]:
                 "hit_rate": hit_rate,
                 "base_rate": base_rate,
                 "lift": hit_rate / base_rate if base_rate else 0.0,
+                "expected_rate": expected,
+                "adjusted_lift": adjusted_lift,
+                "train_rate": train_rate,
+                "test_rate": test_rate,
+                "test_n": int(len(test_subset)),
+                "oos_lift": oos_lift,
                 "median_fwd_return": float(subset["fwd_return"].median()),
+                "p25_fwd_return": float(subset["fwd_return"].quantile(0.25)),
+                "p75_fwd_return": float(subset["fwd_return"].quantile(0.75)),
                 "bust_rate": float(subset["bust"].mean()),
                 "base_bust_rate": base_bust_rate,
                 "ci_low": low,
@@ -145,14 +241,14 @@ def run(years: int = 12, tickers: list[str] | None = None) -> list[dict]:
             }
         )
         log.info(
-            "%-22s n=%-7d up=%5.2f%% (lift %.2fx)  down=%5.2f%% (base %.2f%%)  "
-            "median=%+.1f%%",
-            key, n, hit_rate * 100, rows[-1]["lift"],
-            rows[-1]["bust_rate"] * 100, base_bust_rate * 100,
-            rows[-1]["median_fwd_return"] * 100,
+            "%-22s n=%-7d up=%5.2f%%  raw=%.2fx  vol-adj=%.2fx  oos=%s  "
+            "down=%5.2f%%  median=%+.1f%%",
+            key, n, hit_rate * 100, rows[-1]["lift"], adjusted_lift,
+            f"{oos_lift:.2f}x" if oos_lift is not None else "  n/a",
+            rows[-1]["bust_rate"] * 100, rows[-1]["median_fwd_return"] * 100,
         )
 
-    rows.sort(key=lambda r: r["lift"], reverse=True)
+    rows.sort(key=lambda r: r["adjusted_lift"], reverse=True)
     db.save_pattern_stats(rows)
     log.info("stored %d conditions to pattern_stats", len(rows))
     return rows

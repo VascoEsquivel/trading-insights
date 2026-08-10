@@ -249,37 +249,49 @@ currently matches, with each setup's historical record attached.
 ### What the study found
 
 Baseline: on a randomly chosen day, a +40% move within 60 trading days followed
-**6.4%** of the time; a −20% move followed **10.1%**.
+**6.3%** of the time; a −20% move followed **10.1%**.
 
-| Setup | n | Big up-move | vs base | Big drop | Typical |
-|---|---|---|---|---|---|
-| Six-month momentum | 47,539 | 15.1% | 2.38x | 14.6% | **+4.7%** |
-| Coiling near the high | 45,468 | 3.1% | 0.48x | **4.7%** | +4.0% |
-| Stage-2 breakout | 15,040 | 6.3% | 0.99x | 8.0% | +3.6% |
-| New 52-week high | 39,325 | 5.0% | 0.79x | 6.7% | +3.5% |
-| Volume shock | 8,494 | 11.2% | 1.76x | 16.2% | +2.5% |
-| *Control: broken downtrend* | 214,786 | 7.3% | 1.15x | 13.5% | +2.8% |
-| Recovering from a collapse | 9,949 | 14.0% | 2.20x | **32.2%** | **−5.5%** |
+Each setup gets three lift numbers, and they disagree in ways that matter:
 
-Two results are worth dwelling on, because they are why the table reports both
-tails rather than a single score:
+| Setup | n | Raw lift | Vol-adj | Out-of-sample | Big drop | Typical | Holds up |
+|---|---|---|---|---|---|---|---|
+| Six-month momentum | 47,540 | 2.38x | **1.30x** | **1.38x** | 14.6% | +4.7% | yes |
+| Stage-2 breakout | 15,106 | 0.99x | **1.29x** | **1.40x** | 8.0% | +3.5% | yes |
+| New 52-week high | 39,452 | 0.79x | **1.21x** | **1.40x** | 6.7% | +3.5% | yes |
+| Volume shock | 8,606 | 1.74x | 1.15x | 1.03x | 16.6% | +2.3% | no |
+| Oversold in an uptrend | 7,989 | 0.81x | 1.05x | 0.93x | 8.0% | +4.3% | no |
+| Fresh golden cross | 25,410 | 1.06x | 0.99x | 0.98x | 10.1% | +3.0% | no |
+| Coiling near the high | 45,724 | 0.48x | 0.95x | 1.07x | 4.8% | +3.9% | no |
+| Squeeze into volume | 2,367 | 1.28x | 0.91x | 0.96x | 11.2% | +2.8% | no |
+| *Control: broken downtrend* | 215,457 | 1.14x | **0.88x** | 0.90x | 13.7% | +2.7% | no |
+| Recovering from a collapse | 9,991 | 2.19x | **0.74x** | 0.76x | 32.5% | −5.7% | no |
 
-**The control condition beat the baseline.** A broken downtrend — below the
-200-day, negative over six months — was followed by a +40% move 15% *more* often
-than a random day. It was included expecting it to underperform. It does not,
-and the reason is that a fixed percentage threshold is partly a volatility bet:
-cheap, violent names clear ±40% more often whichever direction they are heading.
+**Raw lift is actively misleading, and the control proves it.** A fixed +40%
+threshold is partly a volatility bet — cheap, violent names clear any fixed
+percentage more often whichever way they are heading. The control condition
+(below the 200-day, falling) was included expecting it to underperform. On raw
+lift it *beat* the baseline at 1.14x.
 
-**"Recovering from a collapse" is a lottery ticket, not an edge.** It has the
-second-highest big-up-move rate in the table, which on hit rate alone would make
-it a top setup. Its drop rate is 32% against a 10% baseline and its median
-outcome is −5.5%. Ranking by hit rate would have promoted the worst setup in the
-study.
+**Vol-adjusted fixes it** by comparing each setup against stocks in the same
+trailing-volatility decile rather than against the universe. The control drops
+to 0.88x, where it belongs. That correction reversed two rankings:
 
-So the tab sorts by *typical* (median) outcome and always shows the drop rate
-next to the headline number. Six-month momentum is the only condition with both
-a strong upside lift and the best typical outcome — which is roughly what the
-momentum literature would predict.
+- *Recovering from a collapse* collapses from 2.19x to **0.74x**. Its entire
+  apparent edge was volatility. Median outcome −5.7%, drop rate triple the
+  baseline — on raw lift it ranked second, and it is the worst setup here.
+- *Stage-2 breakout* and *New 52-week high* rise from 0.99x and 0.79x to
+  **1.29x** and **1.21x**. Raw lift made two of the better setups look worthless
+  because they select calm stocks, which clear a fixed percentage less often.
+
+**Out-of-sample is the overfitting check.** Rates are computed on the first 60%
+of the date range and re-measured on the last 40%, with a 90-day purge between
+so no forward outcome straddles the boundary. Three conditions clear both bars
+(≥1.10x adjusted and out-of-sample) — and notably the two breakout setups get
+*stronger* out of sample, at 1.40x.
+
+Six-month momentum surviving at 1.30x adjusted and 1.38x out-of-sample is
+roughly what the momentum literature would predict, which is mild evidence the
+pipeline is measuring something real rather than generating noise.
 
 ### Trending news on the matches
 
