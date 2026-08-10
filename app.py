@@ -1932,6 +1932,92 @@ backtest of a strategy, and none of it is advice.
 FILTER_LABELS = {"All": None, "Stocks": "stock", "Crypto": "crypto", "Meme": "meme"}
 
 
+def render_positions_with_sell(rows: list[dict]) -> None:
+    """Positions table with a sell control on each row.
+
+    Buying is reachable from three places; selling previously meant navigating
+    to Markets, picking the right asset class and finding the symbol again —
+    for something you are already looking at.
+    """
+    widths = [1.1, 0.85, 1.0, 1.0, 1.05, 1.15, 1.25, 0.85]
+    head = st.columns(widths)
+    for col, label in zip(
+        head,
+        ["Symbol", "Qty", "Avg cost", "Price", "Value", "Unrealized", "Sell qty", ""],
+    ):
+        col.markdown(f"<div class='ti-rowhead'>{label}</div>", unsafe_allow_html=True)
+
+    for index, row in enumerate(rows):
+        cols = st.columns(widths)
+        symbol = row["symbol"]
+        cols[0].markdown(
+            f"<div class='ti-rowcell sym'><b>{html_lib.escape(symbol)}</b></div>",
+            unsafe_allow_html=True,
+        )
+        cells = [
+            (f"{row['quantity']:g}", ""),
+            (fmt_price(row["avg_cost_basis"]), ""),
+            (fmt_price(row["current_price"]), ""),
+            (f"${row['market_value']:,.2f}" if row["market_value"] is not None else DASH, ""),
+        ]
+        for col, (text, css) in zip(cols[1:5], cells):
+            col.markdown(
+                f"<div class='ti-rowcell ti-num {css}'>{html_lib.escape(text)}</div>",
+                unsafe_allow_html=True,
+            )
+
+        unrealized = row["unrealized_pnl"]
+        if unrealized is None:
+            pnl_text, pnl_css = "unpriced", "ti-dim"
+        else:
+            pnl_text = f"${unrealized:,.2f} ({row['unrealized_pct']:+.1f}%)"
+            pnl_css = "ti-up" if unrealized >= 0 else "ti-down"
+        cols[5].markdown(
+            f"<div class='ti-rowcell ti-num {pnl_css}'>{html_lib.escape(pnl_text)}</div>",
+            unsafe_allow_html=True,
+        )
+
+        quantity = cols[6].number_input(
+            "Sell quantity", min_value=0.0, max_value=float(row["quantity"]),
+            value=float(row["quantity"]), step=1.0, format="%.4f",
+            key=f"sell_qty_{index}_{symbol}", label_visibility="collapsed",
+        )
+        if cols[7].button("Sell", key=f"sell_go_{index}_{symbol}", width="stretch"):
+            try:
+                result = portfolio.execute_trade(
+                    symbol, row["asset_class"], "sell", quantity
+                )
+            except portfolio.TradeError as exc:
+                flash("error", str(exc))
+            else:
+                flash(
+                    "success",
+                    f"Sold {result['quantity']:g} {symbol} at "
+                    f"{fmt_price(result['price'])} · realized "
+                    f"${result['realized_pnl']:,.2f}",
+                )
+            refresh_data()
+            st.rerun()
+
+
+def render_concentration(rows: list[dict], total_value: float) -> None:
+    """Flag when one position dominates the account.
+
+    Easy to drift into on a paper account, where there is no real money making
+    you notice, and it is the difference between testing a process and testing
+    one guess.
+    """
+    if not rows or total_value <= 0:
+        return
+    largest = max(rows, key=lambda r: r["market_value"] or 0)
+    share = (largest["market_value"] or 0) / total_value
+    if share >= 0.40:
+        st.warning(
+            f"{largest['symbol']} is {share * 100:.0f}% of the account. At that "
+            "size the portfolio's result is mostly one position's result."
+        )
+
+
 def positions_frame(rows: list[dict]) -> pd.DataFrame:
     return pd.DataFrame(
         [
@@ -2045,18 +2131,27 @@ def render_performance(summary: dict, asset_class: str | None) -> None:
         return
 
     cols = st.columns(4)
-    cols[0].metric("Closed trades", f"{stats['closed']}")
-    cols[1].metric("Win rate", f"{stats['win_rate'] * 100:.0f}%",
-                   help=f"{stats['wins']} up, {stats['losses']} down")
+    cols[0].metric(
+        "Closed trades", f"{stats['closed']}",
+        help=(f"{stats['scratches']} closed exactly flat"
+              if stats.get("scratches") else None),
+    )
+    cols[1].metric(
+        "Win rate",
+        f"{stats['win_rate'] * 100:.0f}%" if stats["win_rate"] is not None else DASH,
+        help=f"{stats['wins']} up, {stats['losses']} down"
+             + (f", {stats['scratches']} flat (excluded)" if stats.get("scratches") else ""),
+    )
     cols[2].metric(
         "Avg win / avg loss",
         f"${stats['avg_win']:,.0f} / ${stats['avg_loss']:,.0f}"
         if stats["avg_win"] and stats["avg_loss"]
         else (f"${stats['avg_win']:,.0f} / —" if stats["avg_win"] else "— / —"),
     )
+    pf = stats["profit_factor"]
     cols[3].metric(
         "Profit factor",
-        f"{stats['profit_factor']:.2f}" if stats["profit_factor"] else "∞",
+        DASH if pf is None else ("∞" if pf == float("inf") else f"{pf:.2f}"),
         help="Gross profit over gross loss. Above 1 means the winners paid for "
              "the losers.",
     )
@@ -2163,9 +2258,13 @@ def render_portfolio_tab(snapshots: dict) -> None:
 
     st.markdown("#### Positions")
     if summary["positions"]:
-        render_table(positions_frame(summary["positions"]))
+        render_positions_with_sell(summary["positions"])
+        render_concentration(summary["positions"], summary["total_value"])
     else:
-        st.caption("No open positions.")
+        st.caption(
+            "No open positions. Buy something from Markets or Ideas and it "
+            "appears here."
+        )
 
     render_performance(summary, asset_class)
 

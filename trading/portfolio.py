@@ -321,19 +321,34 @@ def trade_stats(asset_class: str | None = None) -> dict[str, Any]:
 
     wins = [t for t in closed if t["realized_pnl"] > 0]
     losses = [t for t in closed if t["realized_pnl"] < 0]
+    # Exactly break-even. Buying and selling at the same price is common on a
+    # paper account, and a scratch is neither a win nor a loss — counting it in
+    # the denominator reported a single flat trade as a 0% win rate.
+    scratches = [t for t in closed if t["realized_pnl"] == 0]
+    decided = len(wins) + len(losses)
+
     gross_win = sum(t["realized_pnl"] for t in wins)
     gross_loss = -sum(t["realized_pnl"] for t in losses)
+
+    if gross_loss > 0:
+        profit_factor = gross_win / gross_loss
+    elif gross_win > 0:
+        profit_factor = float("inf")  # winners, no losers yet
+    else:
+        profit_factor = None  # nothing decided either way
 
     return {
         "closed": len(closed),
         "wins": len(wins),
         "losses": len(losses),
-        "win_rate": len(wins) / len(closed),
+        "scratches": len(scratches),
+        "decided": decided,
+        "win_rate": (len(wins) / decided) if decided else None,
         "avg_win": gross_win / len(wins) if wins else None,
         "avg_loss": gross_loss / len(losses) if losses else None,
         # Gross profit over gross loss. Above 1 means the winners paid for the
         # losers; it survives a low win rate in a way win rate alone does not.
-        "profit_factor": (gross_win / gross_loss) if gross_loss else None,
+        "profit_factor": profit_factor,
         "best": max(closed, key=lambda t: t["realized_pnl"]),
         "worst": min(closed, key=lambda t: t["realized_pnl"]),
         "net_realized": gross_win - gross_loss,

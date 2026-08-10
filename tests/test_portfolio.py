@@ -170,6 +170,7 @@ class PaperEngineTest(unittest.TestCase):
         stats = portfolio.trade_stats()
         self.assertEqual(stats["closed"], 3)
         self.assertAlmostEqual(stats["win_rate"], 2 / 3)
+        self.assertEqual(stats["decided"], 3)
         self.assertAlmostEqual(stats["net_realized"], -10.0)
         self.assertLess(stats["profit_factor"], 1.0)  # 50/60
         self.assertEqual(stats["best"]["symbol"], "AAA")
@@ -180,6 +181,27 @@ class PaperEngineTest(unittest.TestCase):
         portfolio.execute_trade("AAPL", "stock", "buy", 1)
         snapshot("AAPL", 20.0)  # deeply underwater, but not sold
         self.assertEqual(portfolio.trade_stats()["closed"], 0)
+
+    def test_breakeven_trade_is_neither_win_nor_loss(self):
+        """A scratch was reporting 0% win rate and an infinite profit factor."""
+        snapshot("AAPL", 100.0)
+        portfolio.execute_trade("AAPL", "stock", "buy", 2)
+        portfolio.execute_trade("AAPL", "stock", "sell", 2)  # same price
+        stats = portfolio.trade_stats()
+        self.assertEqual(stats["closed"], 1)
+        self.assertEqual(stats["scratches"], 1)
+        self.assertEqual(stats["decided"], 0)
+        self.assertIsNone(stats["win_rate"])
+        self.assertIsNone(stats["profit_factor"])
+
+    def test_all_winners_gives_infinite_profit_factor(self):
+        snapshot("AAA", 100.0)
+        portfolio.execute_trade("AAA", "stock", "buy", 1)
+        snapshot("AAA", 150.0)
+        portfolio.execute_trade("AAA", "stock", "sell", 1)
+        stats = portfolio.trade_stats()
+        self.assertEqual(stats["win_rate"], 1.0)
+        self.assertEqual(stats["profit_factor"], float("inf"))
 
     def test_no_trades_reports_cleanly(self):
         self.assertEqual(portfolio.trade_stats()["closed"], 0)
