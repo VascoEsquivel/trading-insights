@@ -285,6 +285,17 @@
   margin-top: .35rem; font-size: .755rem; color: var(--ti-muted);
 }
 
+/* ---------- market regime banner ---------- */
+
+.ti-regime {
+  border-radius: .7rem; padding: .65rem .85rem; margin-bottom: 1rem;
+  font-size: .82rem; line-height: 1.5;
+  background: var(--ti-surface); border: 1px solid var(--ti-border);
+}
+.ti-regime.bull { border-left: 3px solid var(--ti-up); }
+.ti-regime.bear { border-left: 3px solid var(--ti-down); }
+.ti-regime b { color: var(--ti-text); }
+
 /* ---------- setup record cards ---------- */
 
 .ti-setup {

@@ -113,6 +113,27 @@ def stratified_expected_rate(
     return expected / coverage if coverage else float(panel[column].mean())
 
 
+def add_market_regime(panel: pd.DataFrame, proxy: str = "SPY") -> pd.DataFrame:
+    """Tag every row with whether the market itself was in an uptrend.
+
+    "The sample is dominated by a bull market" was listed as a bias without ever
+    being measured. Splitting on the index's own 200-day turns it into a number:
+    a setup that only works with the tide behind it is worth knowing about
+    before the tide turns.
+
+    Uses SPY's trailing 200-day, so the tag is knowable on the day.
+    """
+    panel = panel.copy()
+    proxy_rows = panel[panel["ticker"] == proxy]
+    if proxy_rows.empty:
+        panel["bull"] = True
+        return panel
+    close = proxy_rows["close"].groupby(level=0).last().sort_index()
+    regime = close > close.rolling(200).mean()
+    panel["bull"] = panel.index.map(regime).astype("boolean").fillna(True)
+    return panel
+
+
 def split_dates(panel: pd.DataFrame) -> tuple[pd.Timestamp, pd.Timestamp]:
     """Train/test boundary, with a purge gap so outcomes don't straddle it.
 
@@ -164,6 +185,12 @@ def run(years: int = 12, tickers: list[str] | None = None) -> list[dict]:
     )
 
     panel = add_vol_buckets(panel)
+    panel = add_market_regime(panel)
+    bull_share = float(panel["bull"].mean())
+    log.info(
+        "market regime: %.0f%% of rows fell while SPY was above its 200-day",
+        bull_share * 100,
+    )
     purge_until, boundary = split_dates(panel)
     train = panel[panel.index <= purge_until]
     test = panel[panel.index > boundary]
@@ -211,6 +238,19 @@ def run(years: int = 12, tickers: list[str] | None = None) -> list[dict]:
             test_rate / test_expected if test_rate is not None and test_expected else None
         )
 
+        bull_sub = subset[subset["bull"]]
+        bear_sub = subset[~subset["bull"]]
+        bull_rate = float(bull_sub["boom"].mean()) if len(bull_sub) else None
+        bear_rate = float(bear_sub["boom"].mean()) if len(bear_sub) else None
+        bull_adj = (
+            bull_rate / stratified_expected_rate(panel[panel["bull"]], bull_sub)
+            if len(bull_sub) > 50 and bull_rate is not None else None
+        )
+        bear_adj = (
+            bear_rate / stratified_expected_rate(panel[~panel["bull"]], bear_sub)
+            if len(bear_sub) > 50 and bear_rate is not None else None
+        )
+
         rows.append(
             {
                 "condition_key": key,
@@ -227,6 +267,9 @@ def run(years: int = 12, tickers: list[str] | None = None) -> list[dict]:
                 "test_rate": test_rate,
                 "test_n": int(len(test_subset)),
                 "oos_lift": oos_lift,
+                "bull_lift": bull_adj,
+                "bear_lift": bear_adj,
+                "bear_n": int(len(bear_sub)),
                 "median_fwd_return": float(subset["fwd_return"].median()),
                 "p25_fwd_return": float(subset["fwd_return"].quantile(0.25)),
                 "p75_fwd_return": float(subset["fwd_return"].quantile(0.75)),
@@ -241,10 +284,12 @@ def run(years: int = 12, tickers: list[str] | None = None) -> list[dict]:
             }
         )
         log.info(
-            "%-22s n=%-7d up=%5.2f%%  raw=%.2fx  vol-adj=%.2fx  oos=%s  "
+            "%-22s n=%-7d vol-adj=%.2fx  oos=%-6s bull=%-6s bear=%-6s "
             "down=%5.2f%%  median=%+.1f%%",
-            key, n, hit_rate * 100, rows[-1]["lift"], adjusted_lift,
-            f"{oos_lift:.2f}x" if oos_lift is not None else "  n/a",
+            key, n, adjusted_lift,
+            f"{oos_lift:.2f}x" if oos_lift is not None else "n/a",
+            f"{bull_adj:.2f}x" if bull_adj is not None else "n/a",
+            f"{bear_adj:.2f}x" if bear_adj is not None else "n/a",
             rows[-1]["bust_rate"] * 100, rows[-1]["median_fwd_return"] * 100,
         )
 

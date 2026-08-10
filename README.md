@@ -293,6 +293,37 @@ Six-month momentum surviving at 1.30x adjusted and 1.38x out-of-sample is
 roughly what the momentum literature would predict, which is mild evidence the
 pipeline is measuring something real rather than generating noise.
 
+### Does it work when the market is falling?
+
+"The sample is dominated by a bull market" was a listed bias; now it is a
+measured column. Every row is tagged with whether SPY was above its own 200-day
+that day (78% of the sample), and each setup is scored separately in each
+regime.
+
+| Setup | Bull | Bear |
+|---|---|---|
+| Six-month momentum | 1.34x | **1.38x** |
+| Stage-2 breakout | 1.32x | **1.35x** |
+| New 52-week high | 1.25x | **1.02x** |
+| Volume shock | 1.11x | **1.32x** |
+| Oversold in an uptrend | 1.00x | **1.36x** |
+| Fresh golden cross | 1.06x | **0.71x** |
+| Recovering from a collapse | 0.88x | **0.46x** |
+
+Momentum and stage-2 breakouts hold in both directions, which is the strongest
+result in the study. New 52-week high does not — it is a bull-market setup, and
+it was one of the three that passed the earlier checks, so the regime column is
+what catches it.
+
+The mean-reversion setups invert: oversold-in-an-uptrend and volume shock are
+*better* when the market is falling. And a fresh golden cross is actively
+harmful in a downtrend at 0.71x — the classic whipsaw.
+
+The Recommended tab reads the live regime from SPY on load, shows which column
+applies today, and only badges a setup "holds up" if it clears 1.10x in the
+*current* regime as well as overall and out of sample. Bear-regime samples are
+roughly a fifth of the data, so those numbers are noisier.
+
 ### Trending news on the matches
 
 Below the ranked list, **Load headlines** pulls company news for the top matches

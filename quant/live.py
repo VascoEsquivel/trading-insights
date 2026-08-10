@@ -99,7 +99,41 @@ def scan(tickers: list[str] | None = None, period: str = "2y") -> list[dict[str,
     return results
 
 
-def rank(results: list[dict[str, Any]], stats: dict[str, dict]) -> list[dict[str, Any]]:
+def current_regime(proxy: str = "SPY") -> dict[str, Any]:
+    """Is the market itself in an uptrend right now?
+
+    The study shows several setups behave completely differently by regime —
+    "New 52-week high" runs 1.25x with the tide and 1.02x against it, and
+    "Recovering from a collapse" halves to 0.46x — so which column applies is
+    not a detail.
+    """
+    import yfinance as yf
+
+    try:
+        hist = yf.Ticker(proxy).history(period="1y", interval="1d")
+        if hist is None or len(hist) < 200:
+            return {"known": False}
+        close = hist["Close"].astype("float64")
+        ma200 = float(close.rolling(200).mean().iloc[-1])
+        last = float(close.iloc[-1])
+        return {
+            "known": True,
+            "bull": last > ma200,
+            "price": last,
+            "ma200": ma200,
+            "gap_pct": (last - ma200) / ma200 * 100,
+            "as_of": hist.index[-1].date().isoformat(),
+        }
+    except Exception as exc:
+        log.error("regime check failed: %s", exc)
+        return {"known": False}
+
+
+def rank(
+    results: list[dict[str, Any]],
+    stats: dict[str, dict],
+    bull: bool | None = None,
+) -> list[dict[str, Any]]:
     """Join live matches to their historical record and order them.
 
     Ordered by how many distinct setups agree, then by the typical historical
@@ -112,8 +146,21 @@ def rank(results: list[dict[str, Any]], stats: dict[str, dict]) -> list[dict[str
     chance of a big move and still a negative typical result, which is exactly
     what separates an edge from a lottery ticket.
     """
+    def regime_lift(s: dict) -> float:
+        """The lift for the regime we are in now, falling back to overall."""
+        if bull is None:
+            return s.get("adjusted_lift") or 0.0
+        key = "bull_lift" if bull else "bear_lift"
+        return s.get(key) or s.get("adjusted_lift") or 0.0
+
     def credible(s: dict) -> bool:
-        return (s.get("adjusted_lift") or 0) >= 1.10 and (s.get("oos_lift") or 0) >= 1.10
+        # Must beat similar-risk stocks, survive out of sample, AND still work
+        # in the regime we are currently in.
+        return (
+            (s.get("adjusted_lift") or 0) >= 1.10
+            and (s.get("oos_lift") or 0) >= 1.10
+            and regime_lift(s) >= 1.10
+        )
 
     ranked = []
     for row in results:
@@ -134,6 +181,7 @@ def rank(results: list[dict[str, Any]], stats: dict[str, dict]) -> list[dict[str
                 "worst_downside": max(m["bust_rate"] for m in matched),
                 "best_lift": max(m["lift"] for m in matched),
                 "best_adjusted": max((m.get("adjusted_lift") or 0) for m in matched),
+                "best_regime_lift": max(regime_lift(m) for m in matched),
             }
         )
 
@@ -143,7 +191,7 @@ def rank(results: list[dict[str, Any]], stats: dict[str, dict]) -> list[dict[str
     # that survives both tests.
     ranked.sort(
         key=lambda r: (
-            r["n_credible"], r["best_adjusted"], r["typical"], r.get("ret_6m") or -9
+            r["n_credible"], r["best_regime_lift"], r["typical"], r.get("ret_6m") or -9
         ),
         reverse=True,
     )

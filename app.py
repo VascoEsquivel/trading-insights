@@ -1384,9 +1384,14 @@ def load_pattern_stats():
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def load_live_setups():
+def load_regime():
+    return quant_live.current_regime()
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def load_live_setups(bull: bool | None):
     """Heavy: downloads 2y of history for the whole study universe."""
-    return quant_live.rank(quant_live.scan(), db.get_pattern_stats())
+    return quant_live.rank(quant_live.scan(), db.get_pattern_stats(), bull=bull)
 
 
 def pct(value: float | None, digits: int = 1) -> str:
@@ -1415,6 +1420,8 @@ def stats_table(stats: dict) -> pd.DataFrame:
                 "Raw lift": f"{s['lift']:.2f}x",
                 "Vol-adj": f"{s['adjusted_lift']:.2f}x" if s.get("adjusted_lift") else DASH,
                 "Out-of-sample": f"{s['oos_lift']:.2f}x" if s.get("oos_lift") else DASH,
+                "Bull": f"{s['bull_lift']:.2f}x" if s.get("bull_lift") else DASH,
+                "Bear": f"{s['bear_lift']:.2f}x" if s.get("bear_lift") else DASH,
                 "Big drop": pct(s["bust_rate"]),
                 "Typical": signed_pct(s["median_fwd_return"]),
                 "Holds up": "yes" if is_credible(s) else "no",
@@ -1660,6 +1667,20 @@ backtest of a strategy, and none of it is advice.
 """
         )
 
+    regime = load_regime()
+    if regime.get("known"):
+        bull = regime["bull"]
+        st.markdown(
+            f"<div class='ti-regime {'bull' if bull else 'bear'}'>"
+            f"<b>Market regime: {'uptrend' if bull else 'downtrend'}</b> — SPY is "
+            f"{regime['gap_pct']:+.1f}% versus its 200-day average "
+            f"(as of {html_lib.escape(regime['as_of'])}). The "
+            f"<b>{'bull' if bull else 'bear'}</b> column is the one that applies "
+            "today, and several setups behave very differently across the two."
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
     st.markdown("#### The historical record")
     render_table(stats_table(stats))
     st.caption(
@@ -1686,7 +1707,7 @@ backtest of a strategy, and none of it is advice.
         return
 
     with st.spinner("Downloading history and matching setups…"):
-        rows = load_live_setups()
+        rows = load_live_setups(regime.get("bull") if regime.get("known") else None)
     if not rows:
         st.warning("Nothing matched, or the download failed. Try again shortly.")
         return
